@@ -1,11 +1,12 @@
+# Exported from Render on 2025-11-15T05:41:52Z
 version: "1"
 services:
 - type: web
-  name: WOS-Bot
+  name: DISCORD-BOT-2
   runtime: python
   repo: https://github.com/storage2mohitraj-ui/WOS-Bot.git
-  plan: free
   rootDir: DISCORD_BOT_CLEAN
+  plan: free
   envVars:
   - key: DISCORD_TOKEN
     sync: false
@@ -60,7 +61,7 @@ services:
   - key: PYTHONUNBUFFERED
     value: "1"
   - key: PYTHONPATH
-    value: "/opt/render/project/src"
+    value: "/opt/render/project"
   - key: DEV_GUILD_ID
     sync: false
   - key: GUILD_ID
