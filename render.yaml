@@ -84,8 +84,8 @@ services:
   - key: BOT_OWNER_ID
     sync: false
   region: singapore
-  buildCommand: pip install -r requirements.txt
-  startCommand: python app.py
+  buildCommand: cd DISCORD_BOT_CLEAN && pip install -r requirements.txt
+  startCommand: cd DISCORD_BOT_CLEAN && python app.py
   autoDeployTrigger: commit
   # Health check configuration to prevent auto-shutdown
   healthCheckPath: /health
