@@ -7,10 +7,12 @@ import os
 import sys
 
 # Change to the DISCORD_BOT_CLEAN directory
-os.chdir('DISCORD_BOT_CLEAN')
+bot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'DISCORD_BOT_CLEAN')
+os.chdir(bot_dir)
 
-# Add the directory to Python path
-sys.path.insert(0, os.getcwd())
+# Add the directory to Python path at the beginning
+sys.path.insert(0, bot_dir)
 
-# Import and run the main app
-import app
+# Execute the app.py file directly
+with open('app.py', 'r', encoding='utf-8') as f:
+    exec(f.read())
