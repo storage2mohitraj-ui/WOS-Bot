@@ -60,7 +60,7 @@ services:
   - key: PYTHONUNBUFFERED
     value: "1"
   - key: PYTHONPATH
-    value: "."
+    value: "/opt/render/project/src/DISCORD BOT"
   - key: DEV_GUILD_ID
     sync: false
   - key: GUILD_ID
@@ -85,7 +85,7 @@ services:
     sync: false
   region: singapore
   buildCommand: pip install -r "DISCORD BOT/requirements.txt"
-  startCommand: cd "DISCORD BOT" && python app.py
+  startCommand: cd "DISCORD BOT" && export PYTHONPATH=/opt/render/project/src/DISCORD\ BOT:$PYTHONPATH && python app.py
   autoDeployTrigger: commit
   # Health check configuration to prevent auto-shutdown
   healthCheckPath: /health
