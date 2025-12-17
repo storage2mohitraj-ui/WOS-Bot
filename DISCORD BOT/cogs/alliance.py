@@ -2395,7 +2395,7 @@ class Alliance(commands.Cog):
             
             # Check if MongoDB is enabled
             if not mongo_enabled() or not ServerAllianceAdapter:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ MongoDB not enabled. Cannot access Alliance Monitor.",
                     ephemeral=True
                 )
@@ -2414,7 +2414,7 @@ class Alliance(commands.Cog):
                     value="Contact a server administrator to set up password via:\n`/settings` → **Bot Operations** → **Set Member List Password**",
                     inline=False
                 )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
                 return
             
             # Check if user has a valid authentication session
@@ -2438,7 +2438,7 @@ class Alliance(commands.Cog):
                     ),
                     color=discord.Color.blue()
                 )
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     content="✅ **Access Granted** (Session Active)",
                     embed=embed,
                     view=view,
@@ -2573,13 +2573,13 @@ class Alliance(commands.Cog):
             
             # Send authentication embed with button
             view = AllianceAuthView(interaction.guild.id, interaction.guild.name, self)
-            await interaction.response.send_message(embed=auth_embed, view=view, ephemeral=True)
+            await interaction.followup.send(embed=auth_embed, view=view, ephemeral=True)
             
         except Exception as e:
             self.log_message(f"Error in alliance_monitor: {e}")
             import traceback
             traceback.print_exc()
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ An error occurred while opening the monitoring dashboard.",
                 ephemeral=True
             )
