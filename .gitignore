@@ -40,9 +40,12 @@ creds.json
 mongo_uri.txt
 
 # --- Databases & Logs ---
-db/
-!db/*.py
-db.bak
+# Allow db directory and Python files, but ignore database files
+db/*.sqlite*
+db/*.db
+db/backups/
+db/__pycache__/
+db.bak/
 log/
 logs/
 *.log
