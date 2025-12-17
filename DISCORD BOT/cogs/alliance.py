@@ -2388,62 +2388,197 @@ class Alliance(commands.Cog):
     @app_commands.command(name="alliancemonitor", description="Alliance monitoring dashboard with quick access to all monitoring features")
     @command_animation
     async def alliance_monitor(self, interaction: discord.Interaction):
-        """Display alliance monitoring dashboard"""
+        """Display alliance monitoring dashboard with authentication"""
         try:
-            # Check admin permissions
-            admin_info = self._get_admin(interaction.user.id)
-            if not admin_info:
+            # Import authentication adapters
+            from db.mongo_adapters import mongo_enabled, ServerAllianceAdapter, AuthSessionsAdapter
+            
+            # Check if MongoDB is enabled
+            if not mongo_enabled() or not ServerAllianceAdapter:
                 await interaction.response.send_message(
-                    "❌ You don't have permission to use this command.",
+                    "❌ MongoDB not enabled. Cannot access Alliance Monitor.",
                     ephemeral=True
                 )
                 return
             
-            # Create dashboard embed
-            embed = discord.Embed(
-                title="🏰 Alliance Monitoring Dashboard",
-                description=(
-                    "Centralized control panel for alliance monitoring operations.\n\n"
-                    "**Available Features:**\n"
-                    "• 👤 Track name changes\n"
-                    "• 🔥 Monitor furnace level changes\n"
-                    "• 🖼️ Detect avatar changes\n\n"
-                    "Use the buttons below to manage your monitoring settings."
-                ),
-                color=discord.Color.blue()
-            )
-            
-            # Add current status info
-            try:
-                with get_db_connection('settings.sqlite') as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM alliance_monitoring 
-                        WHERE guild_id = ? AND enabled = 1
-                    """, (interaction.guild_id,))
-                    active_count = cursor.fetchone()[0]
-                
-                embed.add_field(
-                    name="📊 Current Status",
-                    value=f"**Active Monitors:** {active_count}",
+            # Check if password is set
+            stored_password = ServerAllianceAdapter.get_password(interaction.guild.id)
+            if not stored_password:
+                error_embed = discord.Embed(
+                    title="🔒 Access Denied",
+                    description="No password configured for Alliance Monitor access.",
+                    color=0x2B2D31
+                )
+                error_embed.add_field(
+                    name="⚙️ Administrator Action Required",
+                    value="Contact a server administrator to set up password via:\n`/settings` → **Bot Operations** → **Set Member List Password**",
                     inline=False
                 )
-            except Exception:
-                pass
+                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                return
             
-            self._set_embed_footer(embed)
+            # Check if user has a valid authentication session
+            if AuthSessionsAdapter and AuthSessionsAdapter.is_session_valid(
+                interaction.guild.id,
+                interaction.user.id,
+                stored_password
+            ):
+                # User has valid session, show Alliance Monitor dashboard directly
+                view = AllianceMonitorView(self, interaction.guild.id)
+                
+                embed = discord.Embed(
+                    title="🏰 Alliance Monitoring Dashboard",
+                    description=(
+                        "Centralized control panel for alliance monitoring operations.\n\n"
+                        "**Available Features:**\n"
+                        "• 👤 Track name changes\n"
+                        "• 🔥 Monitor furnace level changes\n"
+                        "• 🖼️ Detect avatar changes\n\n"
+                        "Use the buttons below to manage your monitoring settings."
+                    ),
+                    color=discord.Color.blue()
+                )
+                await interaction.response.send_message(
+                    content="✅ **Access Granted** (Session Active)",
+                    embed=embed,
+                    view=view,
+                    ephemeral=True
+                )
+                return
             
-            # Create view with buttons
-            view = AllianceMonitorView(self, interaction.guild_id)
+            # No valid session - show authentication modal
+            class AllianceAuthModal(discord.ui.Modal, title="🛡️ Security Verification"):
+                password_input = discord.ui.TextInput(
+                    label="Enter Access Code",
+                    placeholder="••••••••••••",
+                    style=discord.TextStyle.short,
+                    required=True,
+                    max_length=50
+                )
+                
+                def __init__(self, guild_id: int, guild_name: str, cog_instance):
+                    super().__init__()
+                    self.guild_id = guild_id
+                    self.guild_name = guild_name
+                    self.cog = cog_instance
+                
+                async def on_submit(self, modal_interaction: discord.Interaction):
+                    try:
+                        entered_password = self.password_input.value.strip()
+                        
+                        # Verify password
+                        if not ServerAllianceAdapter.verify_password(self.guild_id, entered_password):
+                            error_embed = discord.Embed(
+                                title="❌ Authentication Failed",
+                                description="The access code you entered is incorrect.",
+                                color=0xED4245
+                            )
+                            error_embed.add_field(
+                                name="🔄 Try Again",
+                                value="Use `/alliancemonitor` command again to retry.",
+                                inline=False
+                            )
+                            await modal_interaction.response.send_message(embed=error_embed, ephemeral=True)
+                            return
+                        
+                        # Authentication successful - create session
+                        if AuthSessionsAdapter:
+                            try:
+                                AuthSessionsAdapter.create_session(
+                                    self.guild_id,
+                                    modal_interaction.user.id,
+                                    entered_password
+                                )
+                            except Exception as session_error:
+                                print(f"Failed to create auth session: {session_error}")
+                        
+                        # Show Alliance Monitor dashboard directly
+                        view = AllianceMonitorView(self.cog, modal_interaction.guild.id)
+                        
+                        embed = discord.Embed(
+                            title="🏰 Alliance Monitoring Dashboard",
+                            description=(
+                                "Centralized control panel for alliance monitoring operations.\n\n"
+                                "**Available Features:**\n"
+                                "• 👤 Track name changes\n"
+                                "• 🔥 Monitor furnace level changes\n"
+                                "• 🖼️ Detect avatar changes\n\n"
+                                "Use the buttons below to manage your monitoring settings."
+                            ),
+                            color=discord.Color.blue()
+                        )
+                        await modal_interaction.response.send_message(
+                            content="✅ **Access Granted**",
+                            embed=embed,
+                            view=view,
+                            ephemeral=True
+                        )
+                    
+                    except Exception as e:
+                        print(f"Error in alliance auth modal: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        await modal_interaction.response.send_message(
+                            "❌ An error occurred during authentication.",
+                            ephemeral=True
+                        )
             
-            await interaction.response.send_message(
-                embed=embed,
-                view=view,
-                ephemeral=True
+            # Create authentication view with button
+            class AllianceAuthView(discord.ui.View):
+                def __init__(self, guild_id: int, guild_name: str, cog_instance):
+                    super().__init__(timeout=60)
+                    self.guild_id = guild_id
+                    self.guild_name = guild_name
+                    self.cog = cog_instance
+                
+                @discord.ui.button(label="Authenticate", emoji="🔐", style=discord.ButtonStyle.secondary, custom_id="alliance_auth_cmd")
+                async def authenticate(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+                    modal = AllianceAuthModal(self.guild_id, self.guild_name, self.cog)
+                    await button_interaction.response.send_modal(modal)
+            
+            # Create authentication embed
+            auth_embed = discord.Embed(
+                title=interaction.guild.name,
+                description="**Alliance Monitor Access**\n\nAuthentication required to access alliance monitoring features.",
+                color=0x2B2D31
             )
+            
+            auth_embed.set_author(
+                name="SECURITY VERIFICATION REQUIRED",
+                icon_url="https://cdn.discordapp.com/attachments/1435569370389807144/1445470757844160543/unnamed_6_1.png"
+            )
+            
+            auth_embed.add_field(
+                name="🔒 Protected Resource",
+                value="Alliance Monitoring Dashboard",
+                inline=True
+            )
+            
+            auth_embed.add_field(
+                name="🔑 Authentication Method",
+                value="Access Code",
+                inline=True
+            )
+            
+            auth_embed.add_field(
+                name="⚡ Quick Actions",
+                value="Click the button below to proceed with authentication.",
+                inline=False
+            )
+            
+            auth_embed.set_footer(
+                text="Secured by Discord Interaction Gateway",
+                icon_url="https://cdn.discordapp.com/attachments/1435569370389807144/1445660030815961209/discord-logo-png_seeklogo-481205_1.png?ex=69312752&is=692fd5d2&hm=5d6d7961ff5e1d3837308cbea9c5f0baa4a5cdf59af9009e49ba67b864963fe6"
+            )
+            
+            # Send authentication embed with button
+            view = AllianceAuthView(interaction.guild.id, interaction.guild.name, self)
+            await interaction.response.send_message(embed=auth_embed, view=view, ephemeral=True)
             
         except Exception as e:
             self.log_message(f"Error in alliance_monitor: {e}")
+            import traceback
+            traceback.print_exc()
             await interaction.response.send_message(
                 "❌ An error occurred while opening the monitoring dashboard.",
                 ephemeral=True
