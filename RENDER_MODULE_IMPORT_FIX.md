@@ -6,25 +6,56 @@ The bot was failing to deploy on Render with the error:
 ModuleNotFoundError: No module named 'db'
 ```
 
-## Root Cause
-When Render deploys with `rootDir: DISCORD_BOT_CLEAN` in `render.yaml`, the directory structure becomes:
-- `/opt/render/project/src/` - contains the contents of `DISCORD_BOT_CLEAN`
-
-The `PYTHONPATH` was incorrectly set to `/opt/render/project`, which meant Python couldn't find the `db` module that exists in `/opt/render/project/src/db/`.
-
-## Solution
-Updated `render.yaml` to set the correct `PYTHONPATH`:
-
-```yaml
-- key: PYTHONPATH
-  value: "/opt/render/project/src"
+The error showed:
+```
+File "/opt/render/project/src/DISCORD_BOT_CLEAN/cogs/shared_views.py", line 11, in <module>
+    from db.mongo_adapters import AlliancesAdapter
+ModuleNotFoundError: No module named 'db'
 ```
 
-This ensures that when Python tries to import `db.mongo_adapters`, it looks in the correct directory (`/opt/render/project/src/db/`).
+## Root Cause
+The issue was with how Render handles the `rootDir` configuration. When `rootDir: DISCORD_BOT_CLEAN` was set, Render was creating a confusing directory structure where:
+- The repository was cloned to `/opt/render/project/src/`
+- But the `rootDir` setting wasn't properly changing the working directory
+- Python couldn't find the `db` module because it was looking in the wrong location
+
+## Solution
+Instead of using `rootDir`, we now explicitly navigate to the correct directory in both the build and start commands:
+
+### Changes Made to `render.yaml`:
+
+1. **Removed `rootDir` line** - This was causing the directory confusion
+
+2. **Updated `buildCommand`**:
+   ```yaml
+   buildCommand: pip install -r DISCORD_BOT_CLEAN/requirements.txt
+   ```
+
+3. **Updated `startCommand`**:
+   ```yaml
+   startCommand: cd DISCORD_BOT_CLEAN && python app.py
+   ```
+
+4. **Updated `PYTHONPATH`**:
+   ```yaml
+   - key: PYTHONPATH
+     value: "."
+   ```
+   Since we `cd` into `DISCORD_BOT_CLEAN` before running, the current directory (`.`) is the correct path.
 
 ## Files Modified
 1. **f:/STARK-whiteout survival bot/render.yaml**
-   - Changed `PYTHONPATH` from `/opt/render/project` to `/opt/render/project/src`
+   - Removed `rootDir: DISCORD_BOT_CLEAN`
+   - Updated `buildCommand` to `pip install -r DISCORD_BOT_CLEAN/requirements.txt`
+   - Updated `startCommand` to `cd DISCORD_BOT_CLEAN && python app.py`
+   - Updated `PYTHONPATH` to `.`
+
+## How It Works Now
+1. Render clones the repository to `/opt/render/project/src/`
+2. During build, pip installs from `/opt/render/project/src/DISCORD_BOT_CLEAN/requirements.txt`
+3. When starting, the command changes directory to `DISCORD_BOT_CLEAN` first
+4. Then runs `python app.py` from within that directory
+5. Python can now find all modules (`db`, `cogs`, etc.) because they're in the current directory
 
 ## Next Steps
 1. Commit and push the updated `render.yaml` to GitHub
@@ -36,8 +67,5 @@ After deployment, check the Render logs for:
 - ✅ `[SETUP] Dependencies installed successfully`
 - ✅ `[SETUP] Bot initialization complete`
 - ✅ Bot successfully connects to Discord
+- ✅ No `ModuleNotFoundError` errors
 
-If you still see import errors, verify that:
-1. The `rootDir` in `render.yaml` is set to `DISCORD_BOT_CLEAN`
-2. The `PYTHONPATH` is set to `/opt/render/project/src`
-3. All required files exist in the `DISCORD_BOT_CLEAN` directory
