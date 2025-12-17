@@ -636,11 +636,48 @@ class MessageExtractor(commands.Cog):
             gap: 5px;
             color: #00ff41;
             transition: all 0.3s ease;
+            position: relative;
+            cursor: pointer;
         }}
         
         .reaction:hover {{
             background: rgba(0, 255, 65, 0.15);
             box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+        }}
+        
+        .reaction:hover .reaction-users {{
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(-5px);
+        }}
+        
+        .reaction-users {{
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%) translateY(0);
+            background: rgba(10, 14, 39, 0.98);
+            border: 1px solid #00ff41;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            white-space: nowrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+            z-index: 1000;
+            box-shadow: 0 0 15px rgba(0, 255, 65, 0.3);
+            margin-bottom: 5px;
+        }}
+        
+        .reaction-users::after {{
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            border: 5px solid transparent;
+            border-top-color: #00ff41;
         }}
         
         .reply-indicator {{
@@ -1143,7 +1180,15 @@ class MessageExtractor(commands.Cog):
             if msg['reactions']:
                 reactions_html = '<div class="reactions">'
                 for reaction in msg['reactions']:
-                    reactions_html += f'<span class="reaction">{reaction["emoji"]} {reaction["count"]}</span>'
+                    # Create user list for tooltip
+                    user_names = ', '.join([user['display_name'] for user in reaction.get('users', [])])
+                    if not user_names:
+                        user_names = 'Unknown users'
+                    
+                    reactions_html += f'''<span class="reaction">
+                        {reaction["emoji"]} {reaction["count"]}
+                        <span class="reaction-users">{user_names}</span>
+                    </span>'''
                 reactions_html += '</div>'
             
             # Combine all parts
@@ -1272,7 +1317,15 @@ class MessageExtractor(commands.Cog):
                     "reactions": [
                         {
                             "emoji": str(reaction.emoji),
-                            "count": reaction.count
+                            "count": reaction.count,
+                            "users": [
+                                {
+                                    "id": str(user.id),
+                                    "name": user.name,
+                                    "display_name": user.display_name
+                                }
+                                async for user in reaction.users()
+                            ]
                         }
                         for reaction in message.reactions
                     ],
