@@ -5,7 +5,7 @@ services:
   name: DISCORD-BOT-2
   runtime: python
   repo: https://github.com/storage2mohitraj-ui/WOS-Bot.git
-
+  rootDir: DISCORD BOT
   plan: free
   envVars:
   - key: DISCORD_TOKEN

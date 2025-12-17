@@ -1,72 +1,64 @@
-# Sensitive files
+__pycache__
+# Track Python source files in db/, but ignore databases and cache
+db/__pycache__
+db/*.sqlite*
+db/*.db
+db/backups/
+db.bak
+log
 bot_token.txt
-mongo_uri.txt
-creds.json
-*.env
-.env.*
-
-# Python
+version
+.python-version
+bot_venv
+.env
+.env.*.env
+.venv311/
+# --- Python Cache & Build Files ---
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+*.pyo
+*.pyd
+*.log
+*.bak
+*.db
+*.sqlite3
 
-# Virtual environments
+# --- Virtual Environments ---
+.venv/
+.venv311/
 venv/
-ENV/
 env/
 bot_venv/
-backend/backend/venv/
 
-# Database files
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.db
+# --- Environment & Secrets ---
+.env
+.env.*.env
+bot_token.txt
+version
+.python-version
+creds.json
+mongo_uri.txt
 
-# Logs
+# --- Databases & Logs ---
+db/
+!db/*.py
+db.bak
 log/
 logs/
 *.log
 
-# IDE
+# --- IDE / Editor Specific ---
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
+*.code-workspace
 
-# OS
+# --- System Files ---
 .DS_Store
 Thumbs.db
 
-# Git repositories (embedded)
-backend/
-frontend/
-lavalink/
-DISCORD-BOT-mirror-backup.git/
-
-# Backups
-*.zip
-backups/
-
-# Test files
-test_*.png
-verify_*.png
+# --- Deployment / Test Artifacts ---
+dist/
+build/
+*.egg-info/
+coverage/
+pytest_cache/
