@@ -60,7 +60,7 @@ services:
   - key: PYTHONUNBUFFERED
     value: "1"
   - key: PYTHONPATH
-    value: "/opt/render/project/src/DISCORD BOT"
+    value: "."
   - key: DEV_GUILD_ID
     sync: false
   - key: GUILD_ID
