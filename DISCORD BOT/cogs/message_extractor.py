@@ -991,6 +991,10 @@ class MessageExtractor(commands.Cog):
                 <div class="value">{len(messages)}</div>
             </div>
             <div class="stat-card">
+                <div class="label">Channel Members</div>
+                <div class="value">{len([m for m in channel.members])}</div>
+            </div>
+            <div class="stat-card">
                 <div class="label">Server ID</div>
                 <div class="value">{guild.id}</div>
             </div>
