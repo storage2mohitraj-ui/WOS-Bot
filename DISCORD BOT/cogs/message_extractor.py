@@ -992,7 +992,7 @@ class MessageExtractor(commands.Cog):
             </div>
             <div class="stat-card">
                 <div class="label">Channel Members</div>
-                <div class="value">{len([m for m in channel.members])}</div>
+                <div class="value">{len([m for m in channel.members]) if hasattr(channel, 'members') else 'N/A'}</div>
             </div>
             <div class="stat-card">
                 <div class="label">Server ID</div>
@@ -1233,7 +1233,7 @@ class MessageExtractor(commands.Cog):
         self,
         interaction: discord.Interaction,
         guild: discord.Guild,
-        channel: discord.TextChannel,
+        channel: discord.abc.GuildChannel,
         limit: int,
         format: str
     ):
@@ -1400,10 +1400,12 @@ class MessageExtractor(commands.Cog):
     async def display_channels(self, interaction: discord.Interaction, guild: discord.Guild):
         """Display all channels in the selected guild."""
         try:
-            # Get all text channels
+            # Get all text and voice channels
             text_channels = [c for c in guild.channels if isinstance(c, discord.TextChannel)]
+            voice_channels = [c for c in guild.channels if isinstance(c, discord.VoiceChannel)]
+            all_channels = text_channels + voice_channels
             
-            if not text_channels:
+            if not all_channels:
                 await interaction.followup.send(
                     f"ℹ️ **No Streams Available**\n"
                     f"No data streams found in **{guild.name}**.",
@@ -1414,36 +1416,39 @@ class MessageExtractor(commands.Cog):
             # Create embed
             embed = discord.Embed(
                 title=f"📡 Data Streams in {guild.name}",
-                description=f"Found **{len(text_channels)}** available stream(s):",
+                description=f"Found **{len(text_channels)}** text and **{len(voice_channels)}** voice channel(s):",
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
             
             # Group channels by category
             categorized = {}
-            for channel in text_channels:
+            for channel in all_channels:
                 category_name = channel.category.name if channel.category else "No Category"
                 if category_name not in categorized:
                     categorized[category_name] = []
-                categorized[category_name].append(channel)
+                
+                # Add emoji based on channel type
+                emoji = "💬" if isinstance(channel, discord.TextChannel) else "🔊"
+                categorized[category_name].append((channel, emoji))
             
             # Add fields for each category
             field_count = 0
-            for category_name, channels in categorized.items():
+            for category_name, channel_list in categorized.items():
                 if field_count >= 25:  # Discord embed field limit
                     break
                 
-                channel_list = "\n".join([
-                    f"• **{ch.name}** (`{ch.id}`)"
-                    for ch in channels[:10]  # Limit channels per category
+                channels_text = "\n".join([
+                    f"{emoji} **{ch.name}** (`{ch.id}`)"
+                    for ch, emoji in channel_list[:10]  # Limit channels per category
                 ])
                 
-                if len(channels) > 10:
-                    channel_list += f"\n... and {len(channels) - 10} more"
+                if len(channel_list) > 10:
+                    channels_text += f"\n... and {len(channel_list) - 10} more"
                 
                 embed.add_field(
                     name=f"📂 {category_name}",
-                    value=channel_list,
+                    value=channels_text,
                     inline=False
                 )
                 field_count += 1
@@ -1519,20 +1524,44 @@ class ChannelSelect(discord.ui.Select):
     
     def __init__(self, guild: discord.Guild):
         self.guild = guild
+        # Include both text channels and voice channels
         text_channels = [c for c in guild.channels if isinstance(c, discord.TextChannel)]
+        voice_channels = [c for c in guild.channels if isinstance(c, discord.VoiceChannel)]
+        
+        # Combine and sort channels
+        all_channels = []
+        
+        # Add text channels with 💬 emoji
+        for channel in text_channels:
+            all_channels.append({
+                'channel': channel,
+                'emoji': '💬',
+                'type': 'Text'
+            })
+        
+        # Add voice channels with 🔊 emoji
+        for channel in voice_channels:
+            all_channels.append({
+                'channel': channel,
+                'emoji': '🔊',
+                'type': 'Voice'
+            })
+        
+        # Sort by name
+        all_channels.sort(key=lambda x: x['channel'].name.lower())
         
         options = [
             discord.SelectOption(
-                label=f"#{channel.name}"[:100],
-                description=f"Category: {channel.category.name if channel.category else 'None'}",
-                value=str(channel.id),
-                emoji="💬"
+                label=f"#{item['channel'].name}"[:100],
+                description=f"{item['type']} • Category: {item['channel'].category.name if item['channel'].category else 'None'}",
+                value=str(item['channel'].id),
+                emoji=item['emoji']
             )
-            for channel in text_channels[:25]  # Discord limit
+            for item in all_channels[:25]  # Discord limit
         ]
         
         super().__init__(
-            placeholder="🔍 Choose a channel...",
+            placeholder="🔍 Choose a channel (Text or Voice)...",
             min_values=1,
             max_values=1,
             options=options
@@ -1576,7 +1605,7 @@ class LimitModal(discord.ui.Modal, title="Set Message Limit"):
         required=True
     )
     
-    def __init__(self, guild: discord.Guild, channel: discord.TextChannel, format: str, cog):
+    def __init__(self, guild: discord.Guild, channel: discord.abc.GuildChannel, format: str, cog):
         super().__init__()
         self.guild = guild
         self.channel = channel
@@ -1616,7 +1645,7 @@ class LimitModal(discord.ui.Modal, title="Set Message Limit"):
 class FormatButton(discord.ui.Button):
     """Button for selecting output format."""
     
-    def __init__(self, format_type: str, guild: discord.Guild, channel: discord.TextChannel, cog):
+    def __init__(self, format_type: str, guild: discord.Guild, channel: discord.abc.GuildChannel, cog):
         emoji_map = {"json": "📄", "txt": "📝", "csv": "📊", "best": "✨"}
         style_map = {"best": discord.ButtonStyle.success}
         super().__init__(
@@ -1649,7 +1678,7 @@ class FormatButton(discord.ui.Button):
 class LimitButton(discord.ui.Button):
     """Button for selecting a preset message limit."""
     
-    def __init__(self, limit: int, guild: discord.Guild, channel: discord.TextChannel, format_type: str, cog):
+    def __init__(self, limit: int, guild: discord.Guild, channel: discord.abc.GuildChannel, format_type: str, cog):
         if limit == -1:
             label = "All Messages"
             emoji = "♾️"
@@ -1689,7 +1718,7 @@ class LimitButton(discord.ui.Button):
 class CustomLimitButton(discord.ui.Button):
     """Button to show modal for custom limit."""
     
-    def __init__(self, guild: discord.Guild, channel: discord.TextChannel, format_type: str, cog):
+    def __init__(self, guild: discord.Guild, channel: discord.abc.GuildChannel, format_type: str, cog):
         super().__init__(
             label="Custom Amount",
             emoji="⚙️",
@@ -1709,7 +1738,7 @@ class CustomLimitButton(discord.ui.Button):
 class LimitSelectionView(discord.ui.View):
     """View for selecting message limit with preset buttons."""
     
-    def __init__(self, guild: discord.Guild, channel: discord.TextChannel, format_type: str, cog):
+    def __init__(self, guild: discord.Guild, channel: discord.abc.GuildChannel, format_type: str, cog):
         super().__init__(timeout=180)
         self.guild = guild
         self.channel = channel
@@ -1761,7 +1790,7 @@ class ChannelSelectionView(discord.ui.View):
 class FormatSelectionView(discord.ui.View):
     """View for format selection."""
     
-    def __init__(self, bot, guild: discord.Guild, channel: discord.TextChannel, cog):
+    def __init__(self, bot, guild: discord.Guild, channel: discord.abc.GuildChannel, cog):
         super().__init__(timeout=180)
         self.bot = bot
         self.guild = guild
