@@ -490,20 +490,22 @@ class ManageGiftCode(commands.Cog):
         Process gift code redemption for a single member using session pool.
         Returns: (status, success, already_redeemed, failed)
         
-        This method will NEVER give up - it retries until success or already_redeemed.
+        This method will retry intelligently until success, already_redeemed, or permanent failure.
         """
         RETRY_DELAY_BASE = 2.0
         MAX_RETRY_DELAY = 30.0  # Cap retry delay at 30 seconds
+        MAX_LOGIN_RETRIES = 5  # Max times to retry login
+        MAX_REDEMPTION_RETRIES = 10  # Max times to retry redemption
         
         try:
-            # Phase 1: Login with unlimited retries
+            # Phase 1: Login with limited retries
             session = None
             response = None
             login_successful = False
             session_id = None
             login_attempt = 0
             
-            while not login_successful:
+            while not login_successful and login_attempt < MAX_LOGIN_RETRIES:
                 login_attempt += 1
                 try:
                     # Get available session from pool
@@ -519,11 +521,11 @@ class ManageGiftCode(commands.Cog):
                         
                         if msg == "success":  # Player info API returns lowercase success
                             login_successful = True
-                            self.logger.info(f"✅ Login successful for {nickname} (attempt {login_attempt})")
+                            self.logger.info(f"✅ Login successful for {nickname} (FID: {fid}, attempt {login_attempt})")
                             break
                         else:
                             retry_delay = min(RETRY_DELAY_BASE * login_attempt, MAX_RETRY_DELAY)
-                            self.logger.warning(f"Login attempt {login_attempt} failed for {nickname} (FID: {fid}), API returned: {msg}, retrying in {retry_delay:.1f}s")
+                            self.logger.warning(f"Login attempt {login_attempt}/{MAX_LOGIN_RETRIES} failed for {nickname} (FID: {fid}), API returned: {msg}, retrying in {retry_delay:.1f}s")
                             await asyncio.sleep(retry_delay)
                     except Exception as json_err:
                         # Check if HTML error page (rate limited)
@@ -538,15 +540,20 @@ class ManageGiftCode(commands.Cog):
                             raise json_err
                 except Exception as e:
                     retry_delay = min(RETRY_DELAY_BASE * login_attempt, MAX_RETRY_DELAY)
-                    self.logger.warning(f"Login attempt {login_attempt} error for {nickname} (FID: {fid}): {e}, retrying in {retry_delay:.1f}s")
+                    self.logger.warning(f"Login attempt {login_attempt}/{MAX_LOGIN_RETRIES} error for {nickname} (FID: {fid}): {e}, retrying in {retry_delay:.1f}s")
                     await asyncio.sleep(retry_delay)
             
-            # Phase 2: Gift code redemption with unlimited retries
+            # Check if login failed after all retries
+            if not login_successful:
+                self.logger.error(f"❌ Login failed for {nickname} after {MAX_LOGIN_RETRIES} attempts")
+                return ("LOGIN_FAILED", 0, 0, 1)
+            
+            # Phase 2: Gift code redemption with limited retries
             redemption_successful = False
             final_status = None
             redemption_attempt = 0
             
-            while not redemption_successful:
+            while not redemption_successful and redemption_attempt < MAX_REDEMPTION_RETRIES:
                 redemption_attempt += 1
                 try:
                     # Get available session from pool
@@ -556,8 +563,38 @@ class ManageGiftCode(commands.Cog):
                     status, img, code, method = await self.attempt_gift_code_with_api(fid, giftcode, session)
                     final_status = status
                     
+                    # Check for NOT LOGIN error - need to re-establish session
+                    if status == "CAPTCHA_FETCH_ERROR":
+                        # Could be due to session expiry, try to re-login
+                        self.logger.warning(f"⚠️ CAPTCHA fetch failed for {nickname}, might be session issue, re-logging in...")
+                        
+                        # Re-establish login
+                        session, response = await self.get_stove_info_wos(player_id=fid)
+                        try:
+                            player_info = response.json()
+                            if player_info.get("msg") == "success":
+                                self.logger.info(f"✅ Re-login successful for {nickname}")
+                                retry_delay = min(RETRY_DELAY_BASE * redemption_attempt, MAX_RETRY_DELAY)
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            else:
+                                self.logger.error(f"❌ Re-login failed for {nickname}: {player_info.get('msg')}")
+                                # Treat as permanent failure after 3 re-login attempts
+                                if redemption_attempt >= 3:
+                                    break
+                                retry_delay = min(RETRY_DELAY_BASE * 2 * redemption_attempt, MAX_RETRY_DELAY)
+                                await asyncio.sleep(retry_delay)
+                                continue
+                        except Exception:
+                            # Re-login failed critically
+                            if redemption_attempt >= 3:
+                                break
+                            retry_delay = min(RETRY_DELAY_BASE * 2 * redemption_attempt, MAX_RETRY_DELAY)
+                            await asyncio.sleep(retry_delay)
+                            continue
+                    
                     # Check for rate limiting
-                    if status in ["CAPTCHA_FETCH_ERROR", "RATE_LIMITED", "CAPTCHA_TOO_FREQUENT"]:
+                    if status in ["RATE_LIMITED", "CAPTCHA_TOO_FREQUENT"]:
                         self.logger.warning(f"Rate limit detected for {nickname}, session {session_id}: {status}, attempt {redemption_attempt}")
                         if session_id is not None:
                             await self.session_pool.mark_rate_limited(session_id)
@@ -597,18 +634,17 @@ class ManageGiftCode(commands.Cog):
                         await asyncio.sleep(retry_delay)
                     else:
                         # Temporary failure - retry with backoff
-                        # But also cap retries to prevent infinite loops
-                        if redemption_attempt >= 10:
-                            self.logger.error(f"❌ Max retry attempts (10) reached for {nickname} with status: {status}")
-                            break
-                            
                         retry_delay = min(RETRY_DELAY_BASE * redemption_attempt, MAX_RETRY_DELAY)
-                        self.logger.warning(f"Redemption attempt {redemption_attempt} failed for {nickname}: {status}, retrying in {retry_delay:.1f}s")
+                        self.logger.warning(f"Redemption attempt {redemption_attempt}/{MAX_REDEMPTION_RETRIES} failed for {nickname}: {status}, retrying in {retry_delay:.1f}s")
                         await asyncio.sleep(retry_delay)
                 except Exception as e:
                     retry_delay = min(RETRY_DELAY_BASE * redemption_attempt, MAX_RETRY_DELAY)
-                    self.logger.warning(f"Redemption attempt {redemption_attempt} error for {nickname}: {e}, retrying in {retry_delay:.1f}s")
+                    self.logger.warning(f"Redemption attempt {redemption_attempt}/{MAX_REDEMPTION_RETRIES} error for {nickname}: {e}, retrying in {retry_delay:.1f}s")
                     await asyncio.sleep(retry_delay)
+            
+            # Check if redemption failed after all retries
+            if not redemption_successful and final_status not in ["ALREADY_RECEIVED"]:
+                self.logger.error(f"❌ Redemption failed for {nickname} after {redemption_attempt} attempts, final status: {final_status}")
             
             # Track redemption to MongoDB for history
             if final_status:
@@ -641,8 +677,8 @@ class ManageGiftCode(commands.Cog):
             
         except Exception as e:
             self.logger.exception(f"Critical error redeeming for {nickname}: {e}")
-            # Even on critical error, we should retry
-            return ("EXCEPTION", False, False, True)
+            # Even on critical error, return failure
+            return ("EXCEPTION", 0, 0, 1)
     
     async def process_auto_redeem(self, guild_id, giftcode):
         """
