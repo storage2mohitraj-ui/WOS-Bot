@@ -576,12 +576,32 @@ class ManageGiftCode(commands.Cog):
                         # Already redeemed - this is a success condition (user already has reward)
                         self.logger.info(f"ℹ️ Already redeemed for {nickname}")
                         break
-                    elif status in ["INVALID_CODE", "EXPIRED", "CDK_NOT_FOUND"]:
+                    elif status in ["INVALID_CODE", "EXPIRED", "CDK_NOT_FOUND", "USAGE_LIMIT", "TIME_ERROR"]:
                         # Permanent failures - code itself is bad, not worth retrying
                         self.logger.warning(f"❌ Permanent failure for {nickname}: {status} - code is invalid/expired")
                         break
+                    elif status.startswith("UNKNOWN_STATUS_"):
+                        # Unknown status - likely a permanent error from the API
+                        # Extract the actual status message
+                        actual_msg = status.replace("UNKNOWN_STATUS_", "")
+                        self.logger.warning(f"⚠️ Unknown API status for {nickname}: {actual_msg}")
+                        
+                        # Treat as permanent failure after 3 attempts to avoid infinite loops
+                        if redemption_attempt >= 3:
+                            self.logger.error(f"❌ Giving up on {nickname} after {redemption_attempt} attempts with unknown status: {actual_msg}")
+                            break
+                        
+                        # Retry with longer backoff for unknown statuses
+                        retry_delay = min(RETRY_DELAY_BASE * 2 * redemption_attempt, MAX_RETRY_DELAY)
+                        self.logger.warning(f"Redemption attempt {redemption_attempt} failed for {nickname}: {status}, retrying in {retry_delay:.1f}s")
+                        await asyncio.sleep(retry_delay)
                     else:
                         # Temporary failure - retry with backoff
+                        # But also cap retries to prevent infinite loops
+                        if redemption_attempt >= 10:
+                            self.logger.error(f"❌ Max retry attempts (10) reached for {nickname} with status: {status}")
+                            break
+                            
                         retry_delay = min(RETRY_DELAY_BASE * redemption_attempt, MAX_RETRY_DELAY)
                         self.logger.warning(f"Redemption attempt {redemption_attempt} failed for {nickname}: {status}, retrying in {retry_delay:.1f}s")
                         await asyncio.sleep(retry_delay)

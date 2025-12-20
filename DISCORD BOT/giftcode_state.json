@@ -21,7 +21,10 @@
       "PEPERO1111",
       "WOS1105"
     ],
-    "global": []
+    "global": [],
+    "123456789": [
+      "TESTCODE123"
+    ]
   },
   "initialized": true
 }

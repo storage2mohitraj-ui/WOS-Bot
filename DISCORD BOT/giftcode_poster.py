@@ -147,17 +147,40 @@ class GiftCodePoster:
             # store back
             # keep deterministic order
             self.state['sent'][str(guild_id)] = list(sorted(sent))
-            # Persist synchronously to ensure durability across restarts
+            
+            # Dual-write strategy: Try both MongoDB and local file to ensure durability
+            mongo_success = False
+            file_success = False
+            
+            # Try MongoDB first
             try:
-                self._save_state_sync()
-                logger.info(f"Giftcode state saved synchronously after marking {len(codes or [])} codes for guild {guild_id}")
+                if mongo_enabled() and GiftcodeStateAdapter is not None:
+                    GiftcodeStateAdapter.set_state(self.state)
+                    mongo_success = True
+                    logger.info(f"✅ State saved to MongoDB for guild {guild_id}")
             except Exception as e:
-                logger.error(f"Synchronous save failed: {e}")
-                # Fallback to async save
-                try:
-                    await self._save_state()
-                except Exception as e2:
-                    logger.error(f"Async fallback save also failed: {e2}")
+                logger.error(f"❌ MongoDB save failed for guild {guild_id}: {e}")
+            
+            # Always save to local file as backup
+            try:
+                import os
+                os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+                with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                    import json
+                    json.dump(self.state, f, ensure_ascii=False, indent=2)
+                file_success = True
+                logger.info(f"✅ State saved to local file for guild {guild_id}")
+            except Exception as e:
+                logger.error(f"❌ Local file save failed for guild {guild_id}: {e}")
+            
+            # Log success/failure
+            if mongo_success and file_success:
+                logger.info(f"✅ Dual-write success: State persisted to both MongoDB and file for guild {guild_id}")
+            elif mongo_success or file_success:
+                logger.warning(f"⚠️ Partial success: State saved to {'MongoDB' if mongo_success else 'file'} only for guild {guild_id}")
+            else:
+                logger.error(f"❌ CRITICAL: Failed to persist state to any storage backend for guild {guild_id}")
+                
         # Also persist each new code into the Mongo `gift_codes` collection
         try:
             if mongo_enabled() and GiftCodesAdapter is not None:
@@ -505,21 +528,47 @@ async def post_new_codes_to_channel(bot: discord.Client, channel: discord.TextCh
 async def run_check_once(bot: discord.Client):
     """Fetch active codes and post new ones to configured channels. Returns summary dict."""
     try:
-        fetched = await get_active_gift_codes()
+        # Try to fetch codes with retry logic
+        MAX_FETCH_RETRIES = 3
+        fetched = None
+        
+        for attempt in range(MAX_FETCH_RETRIES):
+            try:
+                fetched = await get_active_gift_codes()
+                if fetched:
+                    logger.info(f"Successfully fetched {len(fetched)} gift codes (attempt {attempt + 1})")
+                    break
+                else:
+                    logger.warning(f"No codes returned from fetch (attempt {attempt + 1})")
+                    if attempt < MAX_FETCH_RETRIES - 1:
+                        await asyncio.sleep(5 * (attempt + 1))  # Exponential backoff
+            except Exception as e:
+                logger.error(f"Error fetching codes (attempt {attempt + 1}/{MAX_FETCH_RETRIES}): {e}")
+                if attempt < MAX_FETCH_RETRIES - 1:
+                    await asyncio.sleep(5 * (attempt + 1))  # Exponential backoff
+        
         if not fetched:
-            logger.info("No codes fetched from source")
-            return {"posted": 0, "errors": 0}
+            logger.warning("Failed to fetch any codes after retries")
+            return {"posted": 0, "errors": 1}
 
         # Build mapping of normalized code -> full dict for richer embeds
         code_map = {poster._normalize_code(c.get('code','')): c for c in fetched if c.get('code')}
         fetched_codes = list(code_map.keys())
         fetched_set = set(fetched_codes)
+        
+        logger.info(f"Fetched codes: {fetched_codes}")
 
         posted_total = 0
         errors = 0
 
         channels = poster.list_channels()
+        if not channels:
+            logger.info("No channels configured for gift code posting")
+            return {"posted": 0, "errors": 0}
+            
         initialized = bool(poster.state.get('initialized'))
+        logger.info(f"Processing {len(channels)} configured channels (initialized={initialized})")
+        
         for guild_id, channel_id in channels.items():
             try:
                 guild = bot.get_guild(guild_id)
@@ -532,6 +581,8 @@ async def run_check_once(bot: discord.Client):
                     continue
 
                 sent_set = await poster.get_sent_set(guild_id)
+                logger.info(f"Guild {guild_id} ({guild.name}): sent_set has {len(sent_set)} codes")
+                
                 # If this is the first run after the poster was created (no persisted state),
                 # and the guild has no recorded sent codes, avoid blasting all current codes.
                 # Instead, mark the currently fetched codes as sent and skip posting on this run.
@@ -539,7 +590,7 @@ async def run_check_once(bot: discord.Client):
                     try:
                         # mark fetched codes as sent for this guild to avoid reposts
                         await poster.mark_sent(guild_id, list(fetched_set))
-                        logger.info(f"Initialising sent set for guild {guild_id} with current codes (no post)")
+                        logger.info(f"Initialising sent set for guild {guild_id} with {len(fetched_set)} current codes (no post)")
                     except Exception as e:
                         logger.error(f"Failed to initialize sent set for guild {guild_id}: {e}")
                     continue
@@ -547,7 +598,10 @@ async def run_check_once(bot: discord.Client):
                 # fetched_codes and sent_set are normalized already
                 new_code_keys = [k for k in fetched_codes if k and k not in sent_set]
                 if not new_code_keys:
+                    logger.info(f"No new codes for guild {guild_id}")
                     continue
+
+                logger.info(f"Found {len(new_code_keys)} new codes for guild {guild_id}: {new_code_keys}")
 
                 # Prepare list of dicts for embed (use original casing from fetched map)
                 new_code_dicts = [code_map[k] for k in new_code_keys if k in code_map]
@@ -557,9 +611,10 @@ async def run_check_once(bot: discord.Client):
                 # Mark as sent (store code strings)
                 await poster.mark_sent(guild_id, new_code_keys)
                 posted_total += len(new_code_keys)
+                logger.info(f"Posted {len(new_code_keys)} new codes to guild {guild_id}")
 
             except Exception as e:
-                logger.error(f"Error processing guild {guild_id}: {e}")
+                logger.error(f"Error processing guild {guild_id}: {e}", exc_info=True)
                 errors += 1
 
         # If this was the first run, persist initialized flag so subsequent runs behave normally
@@ -567,23 +622,69 @@ async def run_check_once(bot: discord.Client):
             if not poster.state.get('initialized'):
                 poster.state['initialized'] = True
                 await poster._save_state()
-        except Exception:
-            pass
+                logger.info("Marked poster as initialized")
+        except Exception as e:
+            logger.error(f"Error saving initialized state: {e}")
 
+        logger.info(f"Check complete: posted={posted_total}, errors={errors}")
         return {"posted": posted_total, "errors": errors}
     except Exception as e:
-        logger.error(f"Giftcode poster check failed: {e}")
+        logger.error(f"Giftcode poster check failed: {e}", exc_info=True)
         return {"posted": 0, "errors": 1}
+
 
 
 async def start_poster(bot: discord.Client, interval: int = DEFAULT_INTERVAL):
     """Background loop that periodically checks for new gift codes and posts them."""
     logger.info(f"Starting giftcode poster with interval={interval}s")
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+    
     while True:
         try:
-            await run_check_once(bot)
+            result = await run_check_once(bot)
+            
+            # Check if the check was successful
+            if result.get('errors', 0) > 0:
+                consecutive_errors += 1
+                logger.warning(f"Check had errors. Consecutive errors: {consecutive_errors}/{max_consecutive_errors}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"Too many consecutive errors ({consecutive_errors}). Increasing check interval temporarily.")
+                    # Temporarily increase interval to avoid hammering on errors
+                    await asyncio.sleep(interval * 3)
+                    consecutive_errors = 0  # Reset after longer wait
+                    continue
+            else:
+                # Reset consecutive errors on success
+                if consecutive_errors > 0:
+                    logger.info("Check succeeded, resetting error counter")
+                consecutive_errors = 0
+                
         except Exception as e:
-            logger.error(f"Unhandled error in giftcode poster loop: {e}")
+            consecutive_errors += 1
+            logger.error(f"Unhandled error in giftcode poster loop: {e}", exc_info=True)
+            
+            if consecutive_errors >= max_consecutive_errors:
+                logger.critical(f"Critical: Too many consecutive errors ({consecutive_errors}). Bot may need attention.")
+                # Wait longer on critical errors
+                await asyncio.sleep(interval * 5)
+                consecutive_errors = 0
+                continue
+        
+        # Health check log every hour (3600 / interval checks)
+        try:
+            if hasattr(start_poster, '_check_count'):
+                start_poster._check_count += 1
+            else:
+                start_poster._check_count = 1
+                
+            # Log health status every ~100 checks or 1000 seconds (whichever comes first)
+            if start_poster._check_count % max(1, min(100, 1000 // interval)) == 0:
+                logger.info(f"📊 Health check: Gift code poster healthy. Checks completed: {start_poster._check_count}, Consecutive errors: {consecutive_errors}")
+        except Exception:
+            pass
+            
         await asyncio.sleep(interval)
 
 
