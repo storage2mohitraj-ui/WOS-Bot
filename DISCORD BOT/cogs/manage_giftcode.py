@@ -173,6 +173,10 @@ class ManageGiftCode(commands.Cog):
         # Concurrent processing configuration
         self.concurrent_redemptions = 2  # Process 2 members simultaneously
         
+        # Auto-redeem lock to prevent duplicate processing
+        self._active_redemptions = set()  # Track active (guild_id, code) pairs
+        self._redemption_lock = asyncio.Lock()
+        
         self.setup_database()
         
         # Start the API check task
@@ -617,6 +621,10 @@ class ManageGiftCode(commands.Cog):
                         # Permanent failures - code itself is bad, not worth retrying
                         self.logger.warning(f"❌ Permanent failure for {nickname}: {status} - code is invalid/expired")
                         break
+                    elif "RECHARGE_MONEY_VIP" in status or "VIP" in status:
+                        # VIP/Purchase requirement - this code requires the player to have VIP or made purchases
+                        self.logger.warning(f"💎 VIP/Purchase required for {nickname}: This gift code requires VIP status or in-game purchases")
+                        break
                     elif status.startswith("UNKNOWN_STATUS_"):
                         # Unknown status - likely a permanent error from the API
                         # Extract the actual status message
@@ -688,6 +696,17 @@ class ManageGiftCode(commands.Cog):
             guild_id: Discord guild ID
             giftcode: Gift code to redeem
         """
+        # Check if redemption already in progress for this guild/code combination
+        redemption_key = (guild_id, giftcode)
+        
+        async with self._redemption_lock:
+            if redemption_key in self._active_redemptions:
+                self.logger.warning(f"⚠️ Auto-redeem already in progress for guild {guild_id} with code {giftcode}, skipping duplicate")
+                return
+            # Mark this redemption as active
+            self._active_redemptions.add(redemption_key)
+            self.logger.info(f"🔒 Locked auto-redeem for guild {guild_id} with code {giftcode}")
+        
         try:
             # Check if auto redeem is enabled - try MongoDB first, fallback to SQLite
             enabled = False
@@ -851,6 +870,13 @@ class ManageGiftCode(commands.Cog):
             
         except Exception as e:
             self.logger.exception(f"Error in process_auto_redeem: {e}")
+        finally:
+            # Always release the lock
+            async with self._redemption_lock:
+                redemption_key = (guild_id, giftcode)
+                if redemption_key in self._active_redemptions:
+                    self._active_redemptions.discard(redemption_key)
+                    self.logger.info(f"🔓 Unlocked auto-redeem for guild {guild_id} with code {giftcode}")
     
     def encode_data(self, data_dict):
         """Encode data for WOS API requests"""

@@ -38,7 +38,26 @@ class StartView(discord.ui.View):
                     value="Contact a server administrator to set up password via:\n`/settings` → **Bot Operations** → **Set Member List Password**",
                     inline=False
                 )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                error_embed.add_field(
+                    name="💬 Need Help?",
+                    value="Contact the Global Admin for assistance with bot setup.",
+                    inline=False
+                )
+                
+                # Create view with contact button
+                class ContactAdminView(discord.ui.View):
+                    def __init__(self):
+                        super().__init__(timeout=None)
+                        # Add link button to contact global admin
+                        self.add_item(discord.ui.Button(
+                            label="Contact Global Admin",
+                            emoji="👤",
+                            style=discord.ButtonStyle.link,
+                            url="https://discord.com/users/850786361572720661"
+                        ))
+                
+                view = ContactAdminView()
+                await interaction.response.send_message(embed=error_embed, view=view, ephemeral=True)
                 return
             
             # Check if user has a valid authentication session
@@ -245,7 +264,26 @@ class StartView(discord.ui.View):
                     value="Contact a server administrator to set up password via:\n`/settings` → **Bot Operations** → **Set Member List Password**",
                     inline=False
                 )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                error_embed.add_field(
+                    name="💬 Need Help?",
+                    value="Contact the Global Admin for assistance with bot setup.",
+                    inline=False
+                )
+                
+                # Create view with contact button
+                class ContactAdminView(discord.ui.View):
+                    def __init__(self):
+                        super().__init__(timeout=None)
+                        # Add link button to contact global admin
+                        self.add_item(discord.ui.Button(
+                            label="Contact Global Admin",
+                            emoji="👤",
+                            style=discord.ButtonStyle.link,
+                            url="https://discord.com/users/850786361572720661"
+                        ))
+                
+                view = ContactAdminView()
+                await interaction.response.send_message(embed=error_embed, view=view, ephemeral=True)
                 return
             
             # Check if user has a valid authentication session
