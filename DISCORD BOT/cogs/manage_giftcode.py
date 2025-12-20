@@ -1348,10 +1348,10 @@ class ManageGiftCode(commands.Cog):
         """Trigger auto-redeem for all guilds with auto-redeem enabled"""
         try:
             # Get all guilds with auto-redeem enabled
-            self.giftcode_cursor.execute("""
+            self.cursor.execute("""
                 SELECT guild_id FROM auto_redeem_settings WHERE enabled = 1
             """)
-            enabled_guilds = self.giftcode_cursor.fetchall()
+            enabled_guilds = self.cursor.fetchall()
             
             if not enabled_guilds:
                 self.logger.info("No guilds have auto-redeem enabled")

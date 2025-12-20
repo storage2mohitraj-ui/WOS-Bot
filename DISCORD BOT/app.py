@@ -1081,6 +1081,54 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 
+# Global interaction check for server locks - prevents commands on locked servers
+async def check_server_lock(interaction: discord.Interaction) -> bool:
+    """Check if the server is locked before processing commands"""
+    # Only check for guild-based command interactions (not DMs, not component interactions)
+    if interaction.guild and interaction.type == discord.InteractionType.application_command:
+        try:
+            import sqlite3
+            # Check if server is locked
+            settings_db = sqlite3.connect('db/settings.sqlite')
+            cursor = settings_db.cursor()
+            cursor.execute("SELECT locked FROM server_locks WHERE guild_id = ?", (interaction.guild.id,))
+            result = cursor.fetchone()
+            settings_db.close()
+            
+            # If server is locked, send locked message and block command execution
+            if result and result[0] == 1:
+                embed = discord.Embed(
+                    title="🔒 Bot Locked",
+                    description=(
+                        "**This bot is currently locked for this server.**\n\n"
+                        "The bot will not respond to any commands until it is unlocked by the Global Administrator.\n\n"
+                        "If you believe this is an error, please contact the server administrators."
+                    ),
+                    color=0xED4245
+                )
+                embed.set_footer(text="Contact your server administrator for assistance")
+                
+                try:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                except:
+                    try:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                    except:
+                        pass
+                
+                # Return False to block command execution
+                return False
+        except Exception as e:
+            # If there's an error checking locks, log it but allow command to proceed
+            logger.error(f"Error checking server lock status: {e}")
+    
+    # Allow command execution
+    return True
+
+# Add the check to the bot's command tree
+bot.tree.interaction_check = check_server_lock
+
+
 # --- Message Handler for Commands and DMs ---------------------------------
 
 @bot.event
