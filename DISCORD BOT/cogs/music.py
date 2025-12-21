@@ -219,7 +219,7 @@ class CustomPlayer(wavelink.Player):
             "slowed_reverb": self.slowed_reverb_enabled
         }
     
-    def save_state(self):
+    async def save_state(self):
         """Save current playback state to database"""
         if not music_state_storage or not self.guild:
             return
@@ -247,7 +247,7 @@ class CustomPlayer(wavelink.Player):
                 })
             
             # Save to storage
-            music_state_storage.save_state(
+            await music_state_storage.save_state(
                 guild_id=self.guild.id,
                 channel_id=self.channel.id if self.channel else None,
                 text_channel_id=self.text_channel.id if self.text_channel else None,
@@ -677,7 +677,7 @@ class VoiceChannelButton(discord.ui.Button):
                 
                 # Save persistent channel selection
                 if music_state_storage:
-                    music_state_storage.set_persistent_channel(self.guild.id, self.channel.id)
+                    await music_state_storage.set_persistent_channel(self.guild.id, self.channel.id)
                 
                 # Update the original message
                 success_embed = discord.Embed(
@@ -1687,7 +1687,7 @@ class Music(commands.Cog):
             return
         
         try:
-            states = music_state_storage.get_all_states()
+            states = await music_state_storage.get_all_states()
             
             if not states:
                 print("No music states to restore")
@@ -1930,7 +1930,7 @@ class Music(commands.Cog):
                 # Save persistent channel selection
                 if music_state_storage:
                     try:
-                        music_state_storage.set_persistent_channel(member.guild.id, voice_channel.id)
+                        await music_state_storage.set_persistent_channel(member.guild.id, voice_channel.id)
                     except Exception as e:
                         print(f"Warning: Could not save persistent channel: {e}")
                 
@@ -2277,7 +2277,7 @@ class Music(commands.Cog):
             else:
                 # User is not in voice - check for persistent channel
                 if music_state_storage:
-                    persistent_channel_id = music_state_storage.get_persistent_channel(interaction.guild.id)
+                    persistent_channel_id = await music_state_storage.get_persistent_channel(interaction.guild.id)
                     if persistent_channel_id:
                         target_channel = interaction.guild.get_channel(persistent_channel_id)
                         
@@ -2285,18 +2285,18 @@ class Music(commands.Cog):
                         if target_channel:
                             if not isinstance(target_channel, discord.VoiceChannel):
                                 # Invalid channel type, clear it
-                                music_state_storage.clear_persistent_channel(interaction.guild.id)
+                                await music_state_storage.clear_persistent_channel(interaction.guild.id)
                                 target_channel = None
                             else:
                                 # Check permissions
                                 permissions = target_channel.permissions_for(interaction.guild.me)
                                 if not permissions.connect or not permissions.speak:
                                     # No permissions, clear it
-                                    music_state_storage.clear_persistent_channel(interaction.guild.id)
+                                    await music_state_storage.clear_persistent_channel(interaction.guild.id)
                                     target_channel = None
                         else:
                             # Channel was deleted, clear it
-                            music_state_storage.clear_persistent_channel(interaction.guild.id)
+                            await music_state_storage.clear_persistent_channel(interaction.guild.id)
                 
                 # If no valid persistent channel, show selection UI
                 if not target_channel:
@@ -2366,7 +2366,7 @@ class Music(commands.Cog):
                 
                 # Save as persistent channel if user wasn't in voice
                 if music_state_storage and (not interaction.user.voice or not interaction.user.voice.channel):
-                    music_state_storage.set_persistent_channel(interaction.guild.id, target_channel.id)
+                    await music_state_storage.set_persistent_channel(interaction.guild.id, target_channel.id)
                     
             except Exception as e:
                 print(f"DEBUG: Error connecting to voice: {e}")

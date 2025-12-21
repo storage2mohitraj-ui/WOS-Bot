@@ -859,6 +859,14 @@ async def setup_hook():
     except Exception as e:
         logger.error(f"❌ Failed to initialize playlist storage: {e}")
     
+    # Initialize music state storage
+    try:
+        from music_state_storage import music_state_storage
+        await music_state_storage.initialize()
+        logger.info("✅ Music state storage initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize music state storage: {e}")
+    
     # Start health check server for Render deployment
     try:
         from health_server import start_health_server
