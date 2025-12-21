@@ -212,6 +212,12 @@ class ManageGiftCode(commands.Cog):
             except sqlite3.OperationalError:
                 pass  # Column already exists
             
+            try:
+                self.cursor.execute("ALTER TABLE gift_codes ADD COLUMN auto_redeem_processed INTEGER DEFAULT 0")
+                self.logger.info("Added auto_redeem_processed column to gift_codes")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             # Gift code channels table
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS giftcode_channels (
@@ -1276,12 +1282,12 @@ class ManageGiftCode(commands.Cog):
             
             self.logger.info(f"Found {len(new_codes)} new gift codes!")
             
-            # Add new codes to database
+            # Add new codes to database with auto_redeem_processed = 0
             for code, date in new_codes:
                 try:
                     self.cursor.execute(
-                        "INSERT OR IGNORE INTO gift_codes (giftcode, date, validation_status, added_at) VALUES (?, ?, ?, ?)",
-                        (code, date, "validated", datetime.now())
+                        "INSERT OR IGNORE INTO gift_codes (giftcode, date, validation_status, added_at, auto_redeem_processed) VALUES (?, ?, ?, ?, ?)",
+                        (code, date, "validated", datetime.now(), 0)
                     )
                     self.logger.info(f"Added new code to database: {code}")
                 except Exception as e:
@@ -1361,6 +1367,18 @@ class ManageGiftCode(commands.Cog):
             
             # Process each new code for each enabled guild
             for code, date in new_codes:
+                # Check if this code has already been processed for auto-redeem
+                self.cursor.execute(
+                    "SELECT auto_redeem_processed FROM gift_codes WHERE giftcode = ?",
+                    (code,)
+                )
+                result = self.cursor.fetchone()
+                already_processed = result[0] if result and result[0] else 0
+                
+                if already_processed:
+                    self.logger.info(f"Skipping auto-redeem for code {code} - already processed")
+                    continue
+                
                 for (guild_id,) in enabled_guilds:
                     try:
                         # Run auto-redeem in background to avoid blocking
@@ -1368,6 +1386,17 @@ class ManageGiftCode(commands.Cog):
                         self.logger.info(f"Started auto-redeem for guild {guild_id} with code {code}")
                     except Exception as e:
                         self.logger.error(f"Error starting auto-redeem for guild {guild_id}: {e}")
+                
+                # Mark code as processed after triggering auto-redeem for all guilds
+                try:
+                    self.cursor.execute(
+                        "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
+                        (code,)
+                    )
+                    self.giftcode_db.commit()
+                    self.logger.info(f"Marked code {code} as auto-redeem processed")
+                except Exception as e:
+                    self.logger.error(f"Error marking code {code} as processed: {e}")
         
         except Exception as e:
             self.logger.exception(f"Error triggering auto-redeem: {e}")
