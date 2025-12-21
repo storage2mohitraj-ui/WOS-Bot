@@ -19,9 +19,10 @@ load_dotenv()
 
 # Import playlist UI components
 try:
-    from cogs.playlist_ui import PlaylistManagementView
+    from cogs.playlist_ui import PlaylistManagementView, AddToPlaylistView
 except ImportError:
     PlaylistManagementView = None
+    AddToPlaylistView = None
 
 # Import music state storage
 try:
@@ -601,6 +602,22 @@ class PlayerControlView(discord.ui.View):
             # Open search modal
             modal = SearchModal(self.player, interaction.client)
             await interaction.response.send_modal(modal)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+    
+    @discord.ui.button(emoji="➕", label="Add to Playlist", style=discord.ButtonStyle.success, custom_id="music_add_to_playlist", row=2)
+    async def add_to_playlist_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Add current track to a playlist"""
+        try:
+            if not self.player.current:
+                await interaction.response.send_message("❌ Nothing is playing!", ephemeral=True)
+                return
+            
+            # Create and send the add to playlist view
+            view = AddToPlaylistView(self.player, interaction.user.id, interaction.guild.id)
+            await view.load_playlists()
+            embed = view.get_embed()
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 

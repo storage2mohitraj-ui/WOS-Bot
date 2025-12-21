@@ -497,3 +497,244 @@ class PlaylistManagementView(discord.ui.View):
             color=0x57F287
         )
         await interaction.response.edit_message(embed=embed, view=None)
+
+
+class AddTrackToPlaylistModal(discord.ui.Modal, title="Add to Playlist"):
+    """Modal for adding track to an existing playlist or creating new one"""
+    
+    playlist_name = discord.ui.TextInput(
+        label="Playlist Name",
+        placeholder="Enter existing or new playlist name...",
+        max_length=50,
+        required=True
+    )
+    
+    def __init__(self, player, user_id: int, guild_id: int, track_data: dict):
+        super().__init__()
+        self.player = player
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.track_data = track_data
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            
+            playlist_name = self.playlist_name.value.strip()
+            
+            # Check if playlist exists
+            existing_playlist = await playlist_storage.load_playlist(
+                self.guild_id,
+                self.user_id,
+                playlist_name
+            )
+            
+            if existing_playlist:
+                # Add to existing playlist
+                tracks = existing_playlist['tracks']
+                tracks.append(self.track_data)
+                
+                success = await playlist_storage.save_playlist(
+                    self.guild_id,
+                    self.user_id,
+                    playlist_name,
+                    tracks
+                )
+                
+                if success:
+                    await interaction.followup.send(
+                        f"✅ Added **{self.track_data['title']}** to playlist **{playlist_name}**!",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        "❌ Failed to add track to playlist. Please try again.",
+                        ephemeral=True
+                    )
+            else:
+                # Create new playlist with this track
+                success = await playlist_storage.save_playlist(
+                    self.guild_id,
+                    self.user_id,
+                    playlist_name,
+                    [self.track_data]
+                )
+                
+                if success:
+                    await interaction.followup.send(
+                        f"✅ Created new playlist **{playlist_name}** with **{self.track_data['title']}**!",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        "❌ Failed to create playlist. Please try again.",
+                        ephemeral=True
+                    )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+
+class AddToPlaylistView(discord.ui.View):
+    """View for adding current track to a playlist"""
+    
+    def __init__(self, player, user_id: int, guild_id: int):
+        super().__init__(timeout=180)
+        self.player = player
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.playlists = []
+        self.per_page = 25  # Discord max for select menu
+    
+    async def load_playlists(self):
+        """Load user's playlists"""
+        self.playlists = await playlist_storage.list_playlists(
+            self.guild_id,
+            self.user_id,
+            limit=self.per_page,
+            offset=0
+        )
+        
+        # Add playlist select if user has playlists
+        if self.playlists:
+            self.clear_items()
+            
+            # Create select menu with existing playlists
+            options = []
+            for playlist in self.playlists[:25]:  # Discord limit
+                options.append(discord.SelectOption(
+                    label=playlist['name'],
+                    description=f"{playlist['track_count']} tracks",
+                    value=playlist['name']
+                ))
+            
+            select = discord.ui.Select(
+                placeholder="Select a playlist to add to...",
+                options=options,
+                custom_id="add_to_existing"
+            )
+            select.callback = self.add_to_existing_callback
+            self.add_item(select)
+    
+    def get_embed(self) -> discord.Embed:
+        """Generate embed for adding to playlist"""
+        if not self.player.current:
+            return discord.Embed(
+                title="❌ Nothing Playing",
+                description="No track is currently playing!",
+                color=0xFF0000
+            )
+        
+        track = self.player.current
+        
+        embed = discord.Embed(
+            title="➕ Add to Playlist",
+            description=f"Add **{track.title}** by **{track.author}** to a playlist",
+            color=0x57F287
+        )
+        
+        if self.playlists:
+            embed.add_field(
+                name="📋 Your Playlists",
+                value=f"You have **{len(self.playlists)}** playlist(s). Select one from the dropdown below, or create a new one.",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📝 No Playlists Yet",
+                value="You don't have any playlists. Use the button below to create one!",
+                inline=False
+            )
+        
+        embed.set_footer(text="Select from existing or create new playlist")
+        
+        # Add thumbnail if available
+        if hasattr(track, 'artwork') and track.artwork:
+            embed.set_thumbnail(url=track.artwork)
+        elif hasattr(track, 'thumbnail') and track.thumbnail:
+            embed.set_thumbnail(url=track.thumbnail)
+        
+        return embed
+    
+    async def add_to_existing_callback(self, interaction: discord.Interaction):
+        """Handle adding to existing playlist"""
+        try:
+            playlist_name = interaction.data['values'][0]
+            
+            # Get current track data
+            track = self.player.current
+            track_data = {
+                'title': track.title,
+                'author': track.author,
+                'uri': track.uri,
+                'length': track.length
+            }
+            
+            # Load existing playlist
+            existing_playlist = await playlist_storage.load_playlist(
+                self.guild_id,
+                self.user_id,
+                playlist_name
+            )
+            
+            if existing_playlist:
+                # Add to existing playlist
+                tracks = existing_playlist['tracks']
+                tracks.append(track_data)
+                
+                success = await playlist_storage.save_playlist(
+                    self.guild_id,
+                    self.user_id,
+                    playlist_name,
+                    tracks
+                )
+                
+                if success:
+                    await interaction.response.send_message(
+                        f"✅ Added **{track_data['title']}** to playlist **{playlist_name}**!",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ Failed to add track to playlist. Please try again.",
+                        ephemeral=True
+                    )
+            else:
+                await interaction.response.send_message(
+                    "❌ Playlist not found!",
+                    ephemeral=True
+                )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+    
+    @discord.ui.button(emoji="➕", label="Create New Playlist", style=discord.ButtonStyle.primary, row=1)
+    async def create_new_playlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Create new playlist with current track"""
+        try:
+            if not self.player.current:
+                await interaction.response.send_message("❌ Nothing is playing!", ephemeral=True)
+                return
+            
+            # Get current track data
+            track = self.player.current
+            track_data = {
+                'title': track.title,
+                'author': track.author,
+                'uri': track.uri,
+                'length': track.length
+            }
+            
+            # Open modal for playlist name
+            modal = AddTrackToPlaylistModal(self.player, self.user_id, self.guild_id, track_data)
+            await interaction.response.send_modal(modal)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+    
+    @discord.ui.button(emoji="❌", label="Cancel", style=discord.ButtonStyle.secondary, row=1)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Cancel adding to playlist"""
+        embed = discord.Embed(
+            description="✅ Cancelled",
+            color=0x5865F2
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
