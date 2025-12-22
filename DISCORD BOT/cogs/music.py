@@ -1622,8 +1622,10 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.logger = bot.logger if hasattr(bot, 'logger') else None
-        # Track pending voice channel selections: {user_id: {guild_id, message, text_channel, query}}
+        # Track pending voice channel selections: {user_id: {guild_id, message, text_channel, query, timestamp}}
         self.pending_connections = {}
+        # Start cleanup task
+        self.cleanup_task = None
         
     async def cog_load(self):
         """Initialize Wavelink node when cog loads"""
@@ -1661,6 +1663,9 @@ class Music(commands.Cog):
                     
                     # Restore music states after connection
                     await self.restore_music_states()
+                    
+                    # Start cleanup task for pending connections
+                    self.cleanup_task = self.bot.loop.create_task(self.cleanup_stale_connections())
                 else:
                     raise Exception("No nodes in CONNECTED state")
             else:
@@ -1692,6 +1697,9 @@ class Music(commands.Cog):
     async def cog_unload(self):
         """Cleanup when cog unloads"""
         try:
+            # Cancel cleanup task
+            if self.cleanup_task:
+                self.cleanup_task.cancel()
             await wavelink.Pool.close()
         except:
             pass
@@ -1701,6 +1709,33 @@ class Music(commands.Cog):
         if not wavelink.Pool.nodes:
             return False
         return any(n.status == wavelink.NodeStatus.CONNECTED for n in wavelink.Pool.nodes.values())
+    
+    async def cleanup_stale_connections(self):
+        """Background task to clean up stale pending connections"""
+        import time
+        while True:
+            try:
+                await asyncio.sleep(60)  # Run every minute
+                
+                current_time = time.time()
+                stale_timeout = 300  # 5 minutes
+                
+                # Find stale connections
+                stale_users = []
+                for user_id, pending_data in self.pending_connections.items():
+                    timestamp = pending_data.get('timestamp', 0)
+                    if current_time - timestamp > stale_timeout:
+                        stale_users.append(user_id)
+                
+                # Remove stale connections
+                for user_id in stale_users:
+                    print(f"🧹 Cleaning up stale pending connection for user {user_id}")
+                    del self.pending_connections[user_id]
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"⚠️ Error in cleanup task: {e}")
     
     async def restore_music_states(self):
         """Restore music playback states from database"""
@@ -1968,32 +2003,66 @@ class Music(commands.Cog):
             if pending['guild_id'] != member.guild.id:
                 return
             
+            # Check if bot is already connected to a voice channel in this guild
+            if member.guild.voice_client is not None:
+                print(f"ℹ️ Bot already connected to voice in {member.guild.name}, skipping auto-connect")
+                # Clear pending connection since bot is already connected
+                if member.id in self.pending_connections:
+                    del self.pending_connections[member.id]
+                return
+            
             try:
                 # Connect bot to the voice channel with retry logic
                 voice_channel = after.channel
+                
+                # First, check permissions before attempting to connect
+                permissions = voice_channel.permissions_for(member.guild.me)
+                if not permissions.connect or not permissions.speak:
+                    print(f"❌ Missing permissions to connect to {voice_channel.name}. Required: Connect & Speak")
+                    # Clear pending connection
+                    if member.id in self.pending_connections:
+                        del self.pending_connections[member.id]
+                    return
+                
                 player = None
                 max_connect_retries = 2  # Fewer retries for auto-connect
-                connect_timeout = 30.0
+                connect_timeout = 45.0  # Increased timeout for more reliability
                 
                 for attempt in range(max_connect_retries):
                     try:
+                        print(f"🔄 Attempting to connect to {voice_channel.name} (attempt {attempt + 1}/{max_connect_retries})...")
                         player = await voice_channel.connect(
                             cls=CustomPlayer, 
                             timeout=connect_timeout, 
                             self_deaf=True
                         )
+                        print(f"✅ Successfully connected to {voice_channel.name}")
                         break
-                    except asyncio.TimeoutError:
+                    except asyncio.TimeoutError as timeout_err:
                         if attempt < max_connect_retries - 1:
-                            print(f"Auto-connect timeout, retrying... (attempt {attempt + 1}/{max_connect_retries})")
-                            await asyncio.sleep(2)
+                            print(f"⏱️ Auto-connect timeout to {voice_channel.name}, retrying... (attempt {attempt + 1}/{max_connect_retries})")
+                            await asyncio.sleep(3)  # Longer wait between retries
                         else:
-                            raise  # Let outer exception handler deal with it
+                            print(f"❌ Failed to auto-connect to {voice_channel.name}: Timeout exceeded after {max_connect_retries} attempts")
+                            # Clear pending to prevent retry loops
+                            if member.id in self.pending_connections:
+                                del self.pending_connections[member.id]
+                            raise
+                    except discord.ClientException as client_err:
+                        # Already connected or similar client issue
+                        print(f"⚠️ Auto-connect client error to {voice_channel.name}: {client_err}")
+                        if member.id in self.pending_connections:
+                            del self.pending_connections[member.id]
+                        raise
                     except Exception as e:
                         if attempt < max_connect_retries - 1:
-                            print(f"Auto-connect error: {e}, retrying...")
-                            await asyncio.sleep(2)
+                            print(f"⚠️ Auto-connect error to {voice_channel.name}: {e}, retrying...")
+                            await asyncio.sleep(3)
                         else:
+                            print(f"❌ Failed to auto-connect to {voice_channel.name} after {max_connect_retries} attempts: {e}")
+                            # Clear pending to prevent retry loops
+                            if member.id in self.pending_connections:
+                                del self.pending_connections[member.id]
                             raise
                 
                 if not player:
@@ -2413,39 +2482,48 @@ class Music(commands.Cog):
                         message = await interaction.followup.send(embed=embed, ephemeral=True)
                     
                     # Store pending connection info for voice state listener
+                    import time
                     self.pending_connections[interaction.user.id] = {
                         'guild_id': interaction.guild.id,
                         'message': message,
                         'text_channel': interaction.channel,
-                        'query': query  # Store the search query for later playback
+                        'query': query,  # Store the search query for later playback
+                        'timestamp': time.time()  # Track when this pending connection was created
                     }
                     
                     return None
             
             # Create new player with the target channel
             try:
+                # Check permissions first
+                permissions = target_channel.permissions_for(interaction.guild.me)
+                if not permissions.connect or not permissions.speak:
+                    raise discord.Forbidden(None, "Bot lacks Connect or Speak permissions in the voice channel")
+                
                 player = None
                 max_connect_retries = 2
-                connect_timeout = 30.0  # Reduced from 60s
+                connect_timeout = 45.0  # Increased for better reliability
                 
                 for attempt in range(max_connect_retries):
                     try:
+                        print(f"🔄 Connecting to {target_channel.name} (attempt {attempt + 1}/{max_connect_retries})...")
                         player = await target_channel.connect(
                             cls=CustomPlayer, 
                             timeout=connect_timeout, 
                             self_deaf=True
                         )
+                        print(f"✅ Connected to {target_channel.name}")
                         break
                     except asyncio.TimeoutError:
                         if attempt < max_connect_retries - 1:
-                            print(f"Connection timeout to {target_channel.name}, retrying... (attempt {attempt + 1}/{max_connect_retries})")
-                            await asyncio.sleep(2)
+                            print(f"⏱️ Connection timeout to {target_channel.name}, retrying... (attempt {attempt + 1}/{max_connect_retries})")
+                            await asyncio.sleep(3)
                         else:
-                            raise asyncio.TimeoutError(f"Unable to connect to {target_channel.name} after {max_connect_retries} attempts (timeout: {connect_timeout}s each)")
+                            raise asyncio.TimeoutError(f"Unable to connect to {target_channel.name} after {max_connect_retries} attempts (timeout: {connect_timeout}s each). This may be due to network issues or Discord voice server problems.")
                     except Exception as e:
                         if attempt < max_connect_retries - 1:
-                            print(f"Connection error to {target_channel.name}: {e}, retrying...")
-                            await asyncio.sleep(2)
+                            print(f"⚠️ Connection error to {target_channel.name}: {e}, retrying...")
+                            await asyncio.sleep(3)
                         else:
                             raise
                 
