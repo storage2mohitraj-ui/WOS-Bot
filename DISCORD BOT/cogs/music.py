@@ -1655,6 +1655,10 @@ class Music(commands.Cog):
                     else:
                         print(f"🎵 Successfully connected to Lavalink at {host}:{port}")
                     
+                    # Wait for Lavalink to be fully ready before restoring states
+                    print("⏳ Waiting for Lavalink to stabilize before restoring music states...")
+                    await asyncio.sleep(5)
+                    
                     # Restore music states after connection
                     await self.restore_music_states()
                 else:
@@ -1730,8 +1734,40 @@ class Music(commands.Cog):
                         print(f"  ⚠️ No permissions in {channel.name} ({guild.name}), skipping...")
                         continue
                     
-                    # Connect to voice channel
-                    player: CustomPlayer = await channel.connect(cls=CustomPlayer, timeout=60.0, self_deaf=True)
+                    # Connect to voice channel with retry logic
+                    player = None
+                    max_connect_retries = 3
+                    connect_timeout = 30.0  # Reduced from 60s to 30s
+                    
+                    for attempt in range(max_connect_retries):
+                        try:
+                            print(f"  🔌 Connecting to {channel.name} in {guild.name} (attempt {attempt + 1}/{max_connect_retries})...")
+                            player: CustomPlayer = await channel.connect(
+                                cls=CustomPlayer, 
+                                timeout=connect_timeout, 
+                                self_deaf=True
+                            )
+                            print(f"  ✅ Connected successfully to {channel.name}")
+                            break
+                        except asyncio.TimeoutError:
+                            print(f"  ⏱️ Connection timeout (attempt {attempt + 1}/{max_connect_retries})")
+                            if attempt < max_connect_retries - 1:
+                                wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                                print(f"  ⏳ Waiting {wait_time}s before retry...")
+                                await asyncio.sleep(wait_time)
+                            else:
+                                print(f"  ❌ Failed to connect after {max_connect_retries} attempts, skipping...")
+                                continue
+                        except Exception as e:
+                            print(f"  ❌ Connection error: {e}")
+                            if attempt < max_connect_retries - 1:
+                                await asyncio.sleep(2)
+                            else:
+                                continue
+                    
+                    if not player:
+                        print(f"  ⚠️ Could not establish connection to {channel.name}, skipping state restoration...")
+                        continue
                     
                     # Optimize voice quality
                     await self.optimize_voice_quality(channel)
@@ -1933,9 +1969,39 @@ class Music(commands.Cog):
                 return
             
             try:
-                # Connect bot to the voice channel
+                # Connect bot to the voice channel with retry logic
                 voice_channel = after.channel
-                player = await voice_channel.connect(cls=CustomPlayer, timeout=60.0, self_deaf=True)
+                player = None
+                max_connect_retries = 2  # Fewer retries for auto-connect
+                connect_timeout = 30.0
+                
+                for attempt in range(max_connect_retries):
+                    try:
+                        player = await voice_channel.connect(
+                            cls=CustomPlayer, 
+                            timeout=connect_timeout, 
+                            self_deaf=True
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        if attempt < max_connect_retries - 1:
+                            print(f"Auto-connect timeout, retrying... (attempt {attempt + 1}/{max_connect_retries})")
+                            await asyncio.sleep(2)
+                        else:
+                            raise  # Let outer exception handler deal with it
+                    except Exception as e:
+                        if attempt < max_connect_retries - 1:
+                            print(f"Auto-connect error: {e}, retrying...")
+                            await asyncio.sleep(2)
+                        else:
+                            raise
+                
+                if not player:
+                    print(f"Failed to auto-connect after {max_connect_retries} attempts")
+                    if member.id in self.pending_connections:
+                        del self.pending_connections[member.id]
+                    return
+                
                 player.text_channel = pending.get('text_channel')
                 
                 # Optimize voice quality
@@ -2095,7 +2161,7 @@ class Music(commands.Cog):
                     
                     # Reconnect to voice channel
                     if player.channel:
-                        new_player: CustomPlayer = await player.channel.connect(cls=CustomPlayer, timeout=60.0, self_deaf=True)
+                        new_player: CustomPlayer = await player.channel.connect(cls=CustomPlayer, timeout=30.0, self_deaf=True)
                         
                         # Optimize voice quality
                         await self.optimize_voice_quality(player.channel)
@@ -2358,7 +2424,34 @@ class Music(commands.Cog):
             
             # Create new player with the target channel
             try:
-                player = await target_channel.connect(cls=CustomPlayer, timeout=60.0, self_deaf=True)
+                player = None
+                max_connect_retries = 2
+                connect_timeout = 30.0  # Reduced from 60s
+                
+                for attempt in range(max_connect_retries):
+                    try:
+                        player = await target_channel.connect(
+                            cls=CustomPlayer, 
+                            timeout=connect_timeout, 
+                            self_deaf=True
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        if attempt < max_connect_retries - 1:
+                            print(f"Connection timeout to {target_channel.name}, retrying... (attempt {attempt + 1}/{max_connect_retries})")
+                            await asyncio.sleep(2)
+                        else:
+                            raise asyncio.TimeoutError(f"Unable to connect to {target_channel.name} after {max_connect_retries} attempts (timeout: {connect_timeout}s each)")
+                    except Exception as e:
+                        if attempt < max_connect_retries - 1:
+                            print(f"Connection error to {target_channel.name}: {e}, retrying...")
+                            await asyncio.sleep(2)
+                        else:
+                            raise
+                
+                if not player:
+                    raise Exception(f"Failed to create player for {target_channel.name}")
+                
                 player.text_channel = interaction.channel
                 
                 # Optimize voice quality
