@@ -2126,26 +2126,38 @@ class Music(commands.Cog):
                                     success = await self.safe_play(player, track)
                                     
                                     if success:
-                                        # Send now playing message
+                                        # Edit the welcome message to show now playing
                                         embed = self.create_now_playing_embed(player)
                                         view = PlayerControlView(player)
                                         
-                                        text_channel = pending.get('text_channel')
-                                        if text_channel:
+                                        original_message = pending.get('message')
+                                        if original_message:
                                             try:
-                                                msg = await text_channel.send(embed=embed, view=view)
-                                                player.now_playing_message = msg
+                                                # Edit the original message to show now playing
+                                                await original_message.edit(embed=embed, view=view)
+                                                player.now_playing_message = original_message
                                                 await player.start_progress_updates(self)
-                                                
-                                                # Delete the original welcome message
-                                                original_message = pending.get('message')
-                                                if original_message:
+                                            except discord.NotFound:
+                                                # Message was deleted, send a new one
+                                                text_channel = pending.get('text_channel')
+                                                if text_channel:
                                                     try:
-                                                        await original_message.delete()
+                                                        msg = await text_channel.send(embed=embed, view=view)
+                                                        player.now_playing_message = msg
+                                                        await player.start_progress_updates(self)
                                                     except:
                                                         pass
-                                            except:
-                                                pass
+                                            except Exception as e:
+                                                print(f"Error editing welcome message: {e}")
+                                                # Fallback to sending a new message
+                                                text_channel = pending.get('text_channel')
+                                                if text_channel:
+                                                    try:
+                                                        msg = await text_channel.send(embed=embed, view=view)
+                                                        player.now_playing_message = msg
+                                                        await player.start_progress_updates(self)
+                                                    except:
+                                                        pass
                     except Exception as e:
                         print(f"Failed to play requested song: {e}")
                         import traceback
