@@ -1307,6 +1307,55 @@ class ManageGiftCode(commands.Cog):
         """Wait for bot to be ready before starting API checks"""
         await self.bot.wait_until_ready()
         self.logger.info("Gift code API check task started")
+        
+        # Process any existing unprocessed codes on startup
+        await self.process_existing_codes_on_startup()
+    
+    async def process_existing_codes_on_startup(self):
+        """Check for existing codes that haven't been auto-redeemed and trigger auto-redeem for them"""
+        try:
+            self.logger.info("Checking for existing unprocessed gift codes on startup...")
+            
+            unprocessed_codes = []
+            
+            # Try MongoDB first
+            if mongo_enabled() and GiftCodesAdapter:
+                try:
+                    # Get all codes from MongoDB
+                    all_codes = GiftCodesAdapter.get_all_codes()
+                    # Filter for unprocessed codes
+                    unprocessed_codes = [
+                        (code['giftcode'], code.get('date', ''))
+                        for code in all_codes
+                        if not code.get('auto_redeem_processed', False)
+                    ]
+                    self.logger.info(f"Found {len(unprocessed_codes)} unprocessed codes in MongoDB")
+                except Exception as e:
+                    self.logger.warning(f"Failed to get unprocessed codes from MongoDB: {e}")
+            
+            # Fallback to SQLite if MongoDB failed or not enabled
+            if not unprocessed_codes and (not mongo_enabled() or not GiftCodesAdapter):
+                self.cursor.execute("""
+                    SELECT giftcode, date 
+                    FROM gift_codes 
+                    WHERE auto_redeem_processed = 0 OR auto_redeem_processed IS NULL
+                """)
+                unprocessed_codes = self.cursor.fetchall()
+                self.logger.info(f"Found {len(unprocessed_codes)} unprocessed codes in SQLite")
+            
+            if not unprocessed_codes:
+                self.logger.info("No unprocessed codes found on startup")
+                return
+            
+            self.logger.info(f"Found {len(unprocessed_codes)} total unprocessed codes on startup, triggering auto-redeem...")
+            
+            # Trigger auto-redeem for all unprocessed codes
+            await self.trigger_auto_redeem_for_new_codes(unprocessed_codes)
+            
+            self.logger.info(f"Startup auto-redeem triggered for {len(unprocessed_codes)} codes")
+            
+        except Exception as e:
+            self.logger.exception(f"Error processing existing codes on startup: {e}")
     
     async def notify_admins_new_codes(self, new_codes):
         """Notify global administrators about new gift codes"""
@@ -1353,11 +1402,29 @@ class ManageGiftCode(commands.Cog):
     async def trigger_auto_redeem_for_new_codes(self, new_codes):
         """Trigger auto-redeem for all guilds with auto-redeem enabled"""
         try:
-            # Get all guilds with auto-redeem enabled
-            self.cursor.execute("""
-                SELECT guild_id FROM auto_redeem_settings WHERE enabled = 1
-            """)
-            enabled_guilds = self.cursor.fetchall()
+            # Get all guilds with auto-redeem enabled - try MongoDB first
+            enabled_guilds = []
+            
+            if mongo_enabled() and AutoRedeemSettingsAdapter:
+                try:
+                    # Get all guilds with auto-redeem enabled from MongoDB
+                    all_settings = AutoRedeemSettingsAdapter.get_all_settings()
+                    enabled_guilds = [
+                        (settings['guild_id'],)
+                        for settings in all_settings
+                        if settings.get('enabled', False)
+                    ]
+                    self.logger.info(f"Found {len(enabled_guilds)} guilds with auto-redeem enabled in MongoDB")
+                except Exception as e:
+                    self.logger.warning(f"Failed to get auto-redeem settings from MongoDB: {e}")
+            
+            # Fallback to SQLite if MongoDB failed or not enabled
+            if not enabled_guilds and (not mongo_enabled() or not AutoRedeemSettingsAdapter):
+                self.cursor.execute("""
+                    SELECT guild_id FROM auto_redeem_settings WHERE enabled = 1
+                """)
+                enabled_guilds = self.cursor.fetchall()
+                self.logger.info(f"Found {len(enabled_guilds)} guilds with auto-redeem enabled in SQLite")
             
             if not enabled_guilds:
                 self.logger.info("No guilds have auto-redeem enabled")
@@ -1368,12 +1435,25 @@ class ManageGiftCode(commands.Cog):
             # Process each new code for each enabled guild
             for code, date in new_codes:
                 # Check if this code has already been processed for auto-redeem
-                self.cursor.execute(
-                    "SELECT auto_redeem_processed FROM gift_codes WHERE giftcode = ?",
-                    (code,)
-                )
-                result = self.cursor.fetchone()
-                already_processed = result[0] if result and result[0] else 0
+                already_processed = False
+                
+                # Check MongoDB first
+                if mongo_enabled() and GiftCodesAdapter:
+                    try:
+                        code_data = GiftCodesAdapter.get_code(code)
+                        if code_data:
+                            already_processed = code_data.get('auto_redeem_processed', False)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to check code status in MongoDB: {e}")
+                
+                # Fallback to SQLite
+                if not mongo_enabled() or not GiftCodesAdapter:
+                    self.cursor.execute(
+                        "SELECT auto_redeem_processed FROM gift_codes WHERE giftcode = ?",
+                        (code,)
+                    )
+                    result = self.cursor.fetchone()
+                    already_processed = result[0] if result and result[0] else 0
                 
                 if already_processed:
                     self.logger.info(f"Skipping auto-redeem for code {code} - already processed")
@@ -1389,12 +1469,21 @@ class ManageGiftCode(commands.Cog):
                 
                 # Mark code as processed after triggering auto-redeem for all guilds
                 try:
+                    # Mark in MongoDB if available
+                    if mongo_enabled() and GiftCodesAdapter:
+                        try:
+                            GiftCodesAdapter.mark_code_processed(code)
+                            self.logger.info(f"Marked code {code} as auto-redeem processed in MongoDB")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to mark code as processed in MongoDB: {e}")
+                    
+                    # Also mark in SQLite for consistency
                     self.cursor.execute(
                         "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
                         (code,)
                     )
                     self.giftcode_db.commit()
-                    self.logger.info(f"Marked code {code} as auto-redeem processed")
+                    self.logger.info(f"Marked code {code} as auto-redeem processed in SQLite")
                 except Exception as e:
                     self.logger.error(f"Error marking code {code} as processed: {e}")
         
