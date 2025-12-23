@@ -2077,23 +2077,42 @@ class Music(commands.Cog):
                     return
                 
                 player = None
-                max_connect_retries = 2  # Fewer retries for auto-connect
-                connect_timeout = 45.0  # Increased timeout for more reliability
+                max_connect_retries = 3  # More retries with shorter timeout
+                connect_timeout = 15.0  # Reduced timeout for faster failure (Discord recommends 10-20s)
+                
+                # Diagnostic logging
+                print(f"📊 Voice Connection Diagnostics:")
+                print(f"   • Channel: {voice_channel.name} (ID: {voice_channel.id})")
+                print(f"   • Guild: {member.guild.name} (ID: {member.guild.id})")
+                print(f"   • User count in channel: {len(voice_channel.members)}")
+                print(f"   • Bot permissions: Connect={permissions.connect}, Speak={permissions.speak}")
+                print(f"   • Timeout: {connect_timeout}s, Max retries: {max_connect_retries}")
                 
                 for attempt in range(max_connect_retries):
                     try:
                         print(f"🔄 Attempting to connect to {voice_channel.name} (attempt {attempt + 1}/{max_connect_retries})...")
+                        
+                        # Add connection start time for timeout tracking
+                        import time
+                        start_time = time.time()
+                        
                         player = await voice_channel.connect(
                             cls=CustomPlayer, 
                             timeout=connect_timeout, 
-                            self_deaf=True
+                            self_deaf=True,
+                            reconnect=True  # Enable automatic reconnection
                         )
-                        print(f"✅ Successfully connected to {voice_channel.name}")
+                        
+                        elapsed = time.time() - start_time
+                        print(f"✅ Successfully connected to {voice_channel.name} in {elapsed:.2f}s")
                         break
                     except asyncio.TimeoutError as timeout_err:
+                        elapsed = time.time() - start_time
                         if attempt < max_connect_retries - 1:
-                            print(f"⏱️ Auto-connect timeout to {voice_channel.name}, retrying... (attempt {attempt + 1}/{max_connect_retries})")
-                            await asyncio.sleep(3)  # Longer wait between retries
+                            # Exponential backoff: 2s, 4s, 8s
+                            wait_time = 2 ** (attempt + 1)
+                            print(f"⏱️ Auto-connect timeout to {voice_channel.name} after {connect_timeout}s, retrying in {wait_time}s... (attempt {attempt + 1}/{max_connect_retries})")
+                            await asyncio.sleep(wait_time)
                         else:
                             print(f"❌ Failed to auto-connect to {voice_channel.name}: Timeout exceeded after {max_connect_retries} attempts")
                             # Clear pending to prevent retry loops
@@ -2118,8 +2137,32 @@ class Music(commands.Cog):
                             raise
                 
                 if not player:
-                    print(f"Failed to auto-connect after {max_connect_retries} attempts")
+                    print(f"❌ Failed to auto-connect after {max_connect_retries} attempts")
                     if member.id in self.pending_connections:
+                        # Notify user about connection failure
+                        try:
+                            original_message = pending.get('message')
+                            if original_message:
+                                error_embed = discord.Embed(
+                                    title="❌ Voice Connection Failed",
+                                    description=(
+                                        f"The bot couldn't connect to **{voice_channel.name}** after {max_connect_retries} attempts.\n\n"
+                                        "**Possible causes:**\n"
+                                        "• Discord voice server issues\n"
+                                        "• Network connectivity problems\n"
+                                        "• Bot hosting platform restrictions\n\n"
+                                        "**What to try:**\n"
+                                        "1. Try using `/play` command manually\n"
+                                        "2. Wait a minute and join the voice channel again\n"
+                                        "3. Try a different voice channel\n"
+                                        "4. Check bot logs for detailed error messages"
+                                    ),
+                                    color=0xFF0000
+                                )
+                                await original_message.edit(embed=error_embed)
+                        except Exception as notify_error:
+                            print(f"Could not notify user about connection failure: {notify_error}")
+                        
                         del self.pending_connections[member.id]
                     return
                 
@@ -2565,8 +2608,8 @@ class Music(commands.Cog):
                     raise discord.Forbidden(None, "Bot lacks Connect or Speak permissions in the voice channel")
                 
                 player = None
-                max_connect_retries = 2
-                connect_timeout = 45.0  # Increased for better reliability
+                max_connect_retries = 3  # More retries with shorter timeout
+                connect_timeout = 15.0  # Reduced timeout for faster failure (Discord recommends 10-20s)
                 
                 for attempt in range(max_connect_retries):
                     try:
@@ -2574,14 +2617,17 @@ class Music(commands.Cog):
                         player = await target_channel.connect(
                             cls=CustomPlayer, 
                             timeout=connect_timeout, 
-                            self_deaf=True
+                            self_deaf=True,
+                            reconnect=True  # Enable automatic reconnection
                         )
                         print(f"✅ Connected to {target_channel.name}")
                         break
                     except asyncio.TimeoutError:
                         if attempt < max_connect_retries - 1:
-                            print(f"⏱️ Connection timeout to {target_channel.name}, retrying... (attempt {attempt + 1}/{max_connect_retries})")
-                            await asyncio.sleep(3)
+                            # Exponential backoff: 2s, 4s, 8s
+                            wait_time = 2 ** (attempt + 1)
+                            print(f"⏱️ Connection timeout to {target_channel.name} after {connect_timeout}s, retrying in {wait_time}s... (attempt {attempt + 1}/{max_connect_retries})")
+                            await asyncio.sleep(wait_time)
                         else:
                             raise asyncio.TimeoutError(f"Unable to connect to {target_channel.name} after {max_connect_retries} attempts (timeout: {connect_timeout}s each). This may be due to network issues or Discord voice server problems.")
                     except Exception as e:
