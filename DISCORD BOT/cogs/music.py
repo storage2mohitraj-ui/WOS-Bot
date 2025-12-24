@@ -498,6 +498,8 @@ class PlayerControlView(discord.ui.View):
                 await interaction.response.send_message("❌ Nothing is playing!", ephemeral=True)
                 return
             
+            music_cog = interaction.client.get_cog('Music')
+            
             if self.player.paused:
                 # Resume playback
                 await self.player.pause(False)
@@ -505,9 +507,10 @@ class PlayerControlView(discord.ui.View):
                 button.style = discord.ButtonStyle.danger
                 
                 # Schedule update to the now playing message
-                music_cog = interaction.client.get_cog('Music')
                 if music_cog:
                     await self.player.schedule_message_update(music_cog)
+                    # Update voice channel status
+                    await music_cog.update_voice_channel_status(self.player)
                 
                 await interaction.response.send_message("▶️ Resumed playback", ephemeral=True)
             else:
@@ -517,9 +520,10 @@ class PlayerControlView(discord.ui.View):
                 button.style = discord.ButtonStyle.success
                 
                 # Schedule update to the now playing message
-                music_cog = interaction.client.get_cog('Music')
                 if music_cog:
                     await self.player.schedule_message_update(music_cog)
+                    # Update voice channel status
+                    await music_cog.update_voice_channel_status(self.player)
                 
                 await interaction.response.send_message("⏸️ Paused playback", ephemeral=True)
         except Exception as e:
@@ -2013,6 +2017,9 @@ class Music(commands.Cog):
                     await player.start_progress_updates(self)
                 except Exception as e:
                     print(f"Error updating now playing message: {e}")
+        else:
+            # No next track - update voice channel status to show ready/idle
+            await self.update_voice_channel_status(player, None)
         # Bot will stay in voice channel - no auto-disconnect
         # Music will continue if loop mode is enabled
         # Only disconnect on explicit /stop command
@@ -2021,9 +2028,13 @@ class Music(commands.Cog):
     async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload):
         """Handle track start event"""
         player: CustomPlayer = payload.player
+        track = payload.track
         
-        if not player or not player.text_channel:
+        if not player:
             return
+        
+        # Update voice channel status with currently playing track
+        await self.update_voice_channel_status(player, track)
     
     @commands.Cog.listener()
     async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload):
@@ -2304,6 +2315,54 @@ class Music(commands.Cog):
         except Exception as e:
             # Don't fail if we can't set bitrate (permissions issue)
             print(f"⚠️ Could not optimize voice quality: {e}")
+    
+    async def update_voice_channel_status(self, player: CustomPlayer, track: wavelink.Playable = None) -> None:
+        """Update voice channel status to show currently playing music"""
+        try:
+            if not player or not player.channel:
+                return
+            
+            # Get the track to display (use provided or current)
+            display_track = track or player.current
+            
+            if not display_track:
+                # No music playing - clear status or set idle message
+                try:
+                    await player.channel.edit(status="🎵 Ready to play music")
+                except Exception as e:
+                    print(f"⚠️ Could not update voice channel status (no track): {e}")
+                return
+            
+            # Create status text with track info
+            # Discord voice channel status has a 500 character limit
+            track_title = display_track.title
+            track_author = display_track.author
+            
+            # Truncate if too long (leave room for emojis and formatting)
+            max_title_length = 60
+            max_author_length = 30
+            
+            if len(track_title) > max_title_length:
+                track_title = track_title[:max_title_length-3] + "..."
+            if len(track_author) > max_author_length:
+                track_author = track_author[:max_author_length-3] + "..."
+            
+            # Format the status text
+            if player.paused:
+                status_text = f"⏸️ Paused: {track_title} - {track_author}"
+            else:
+                status_text = f"🎵 Now Playing: {track_title} - {track_author}"
+            
+            # Update the voice channel status
+            await player.channel.edit(status=status_text)
+            print(f"✅ Updated voice channel status: {status_text[:50]}...")
+            
+        except discord.Forbidden:
+            print(f"⚠️ Missing permissions to update voice channel status")
+        except discord.HTTPException as e:
+            print(f"⚠️ HTTP error updating voice channel status: {e}")
+        except Exception as e:
+            print(f"⚠️ Could not update voice channel status: {e}")
     
     async def safe_play(self, player: CustomPlayer, track: wavelink.Playable, interaction: discord.Interaction = None) -> bool:
         """Safely play a track with error handling and reconnection logic"""
@@ -2898,6 +2957,13 @@ class Music(commands.Cog):
         if not player:
             await interaction.response.send_message("❌ Not connected to voice!", ephemeral=True)
             return
+        
+        # Clear voice channel status before disconnecting
+        if player.channel:
+            try:
+                await player.channel.edit(status=None)
+            except Exception as e:
+                print(f"⚠️ Could not clear voice channel status: {e}")
         
         # Stop progress updates
         await player.stop_progress_updates()

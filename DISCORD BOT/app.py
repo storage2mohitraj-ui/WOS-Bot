@@ -828,6 +828,7 @@ async def setup_hook():
         "cogs.music",  # Music bot functionality
         "cogs.auto_translate",  # Auto-translate with DeepL
         "cogs.message_extractor",  # Message extraction for global admins
+        "cogs.tictactoe",  # Tic-Tac-Toe game
     ]
     
     loaded_count = 0

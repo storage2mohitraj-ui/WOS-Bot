@@ -895,9 +895,15 @@ class StartView(discord.ui.View):
             view = GamesView(self.bot)
             embed = discord.Embed(
                 title="🎮 Games Menu",
-                description="Choose a game to play:",
+                description=(
+                    "Choose a game to play:\n\n"
+                    "🎲 **Dice** - Roll the dice and test your luck!\n"
+                    "⭕ **Tic-Tac-Toe** - Challenge a friend to an epic battle!\n\n"
+                    "Select a game below to get started!"
+                ),
                 color=discord.Color.green()
             )
+            embed.set_footer(text="🎯 Have fun playing!")
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         except Exception as e:
             logger.error(f"Error in games button: {e}")
@@ -1038,6 +1044,91 @@ class GamesView(discord.ui.View):
         except Exception as e:
             logger.error(f"Error in dice button: {e}")
             await interaction.response.send_message("Failed to roll dice.", ephemeral=True)
+
+    @discord.ui.button(label="Tic-Tac-Toe", style=discord.ButtonStyle.success, emoji="⭕", custom_id="game_tictactoe")
+    async def tictactoe_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            # Create a modal to select opponent
+            class TicTacToeOpponentModal(discord.ui.Modal, title="🎮 Start Tic-Tac-Toe"):
+                opponent_input = discord.ui.TextInput(
+                    label="Opponent's Username or ID",
+                    placeholder="Enter the username or ID of your opponent...",
+                    style=discord.TextStyle.short,
+                    required=True,
+                    max_length=50
+                )
+                
+                def __init__(self, bot_instance):
+                    super().__init__()
+                    self.bot = bot_instance
+                
+                async def on_submit(self, modal_interaction: discord.Interaction):
+                    try:
+                        opponent_input = self.opponent_input.value.strip()
+                        
+                        # Try to find the opponent
+                        opponent = None
+                        
+                        # Try to get by ID first
+                        if opponent_input.isdigit():
+                            opponent = await modal_interaction.guild.fetch_member(int(opponent_input))
+                        
+                        # If not found, try by username or display name
+                        if not opponent:
+                            for member in modal_interaction.guild.members:
+                                if (member.name.lower() == opponent_input.lower() or 
+                                    member.display_name.lower() == opponent_input.lower() or
+                                    str(member) == opponent_input):
+                                    opponent = member
+                                    break
+                        
+                        if not opponent:
+                            error_embed = discord.Embed(
+                                title="❌ User Not Found",
+                                description=f"Could not find a user matching: **{opponent_input}**\n\nTry using their exact username or Discord ID.",
+                                color=0xFF0000
+                            )
+                            await modal_interaction.response.send_message(embed=error_embed, ephemeral=True)
+                            return
+                        
+                        # Get the TicTacToe cog and call the command
+                        tictactoe_cog = self.bot.get_cog("TicTacToe")
+                        if tictactoe_cog and hasattr(tictactoe_cog, 'tictactoe'):
+                            await tictactoe_cog.tictactoe.callback(tictactoe_cog, modal_interaction, opponent)
+                        else:
+                            await modal_interaction.response.send_message(
+                                "❌ Tic-Tac-Toe game is not available.",
+                                ephemeral=True
+                            )
+                    
+                    except discord.NotFound:
+                        error_embed = discord.Embed(
+                            title="❌ User Not Found",
+                            description=f"Could not find a user with ID or name: **{opponent_input}**",
+                            color=0xFF0000
+                        )
+                        await modal_interaction.response.send_message(embed=error_embed, ephemeral=True)
+                    except Exception as e:
+                        logger.error(f"Error finding opponent: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        if not modal_interaction.response.is_done():
+                            await modal_interaction.response.send_message(
+                                f"❌ An error occurred: {str(e)}",
+                                ephemeral=True
+                            )
+            
+            # Show the opponent selection modal
+            modal = TicTacToeOpponentModal(self.bot)
+            await interaction.response.send_modal(modal)
+            
+        except Exception as e:
+            logger.error(f"Error in tictactoe button: {e}")
+            import traceback
+            traceback.print_exc()
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Failed to start Tic-Tac-Toe.", ephemeral=True)
+
 
 
 class StartMenu(commands.Cog):
