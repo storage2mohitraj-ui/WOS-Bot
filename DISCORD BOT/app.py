@@ -810,6 +810,7 @@ async def setup_hook():
         "cogs.manage_giftcode",
         "cogs.id_channel",
         "cogs.bot_operations",
+        "cogs.remote_access",  # Remote channel management
         "cogs.fid_commands",
         "cogs.record_commands",
         "cogs.bear_trap",

@@ -5436,7 +5436,9 @@ class BotOperations(commands.Cog):
                     "🔍 **Admin Permissions**\n"
                     "└ View and manage admin permissions\n\n"
                     "🔄 **Bot Updates**\n"
-                    "└ Check and manage updates\n"
+                    "└ Check and manage updates\n\n"
+                    "🌐 **Remote Access**\n"
+                    "└ Manage channels across all servers\n"
                     "━━━━━━━━━━━━━━━━━━━━━━"
                 ),
                 color=discord.Color.blue()
@@ -5519,6 +5521,13 @@ class BotOperations(commands.Cog):
                 style=discord.ButtonStyle.primary,
                 custom_id="alliance_control_messages",
                 row=3
+            ))
+            view.add_item(discord.ui.Button(
+                label="Remote Access",
+                emoji="🌐",
+                style=discord.ButtonStyle.success,
+                custom_id="remote_access",
+                row=4
             ))
             view.add_item(discord.ui.Button(
                 label="Main Menu",

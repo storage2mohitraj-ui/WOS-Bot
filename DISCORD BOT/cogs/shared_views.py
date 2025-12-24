@@ -203,6 +203,12 @@ class CategorySelect(discord.ui.Select):
                 emoji="🛡️"
             ),
             discord.SelectOption(
+                label="Auto-Translate",
+                description="Automatic message translation between channels",
+                value="autotranslate",
+                emoji="🌐"
+            ),
+            discord.SelectOption(
                 label="Server Configuration",
                 description="Server settings and customization",
                 value="config",
@@ -238,8 +244,8 @@ class CategorySelect(discord.ui.Select):
                     "**Welcome to Whiteout Survival Bot Command Center**\n"
                     "Access all bot functions through categorized command modules.\n\n"
                     "**📋 AVAILABLE MODULES:**\n\n"
-                    "🎮 **Fun & Games** — 4 commands\n"
-                    "Interactive entertainment and AI generation\n\n"
+                    "🎮 **Fun & Games** — 3 commands\n"
+                    "Interactive games and entertainment\n\n"
                     "🎁 **Gift Codes & Rewards** — 3 commands\n"
                     "Whiteout Survival gift code management\n\n"
                     "🎵 **Music Player** — 15 commands\n"
@@ -250,9 +256,11 @@ class CategorySelect(discord.ui.Select):
                     "Server analytics and member tracking\n\n"
                     "🛡️ **Alliance Management** — 4 commands\n"
                     "Alliance monitoring and operations\n\n"
+                    "🌐 **Auto-Translate** — 5 commands\n"
+                    "Automatic message translation between channels\n\n"
                     "⚙️ **Server Configuration** — 4 commands\n"
                     "Server settings and customization\n\n"
-                    "🔧 **Utility & Tools** — 3 commands\n"
+                    "🔧 **Utility & Tools** — 2 commands\n"
                     "Additional utilities and features\n\n"
                     "```fix\n"
                     "💡 TIP: Use the dropdown menu below to explore each category\n"
@@ -268,7 +276,7 @@ class CategorySelect(discord.ui.Select):
                 title="🎮 FUN & GAMES // MODULE",
                 description=(
                     "```ansi\n"
-                    "\u001b[1;36m▸ ENTERTAINMENT & AI GENERATION SYSTEMS\u001b[0m\n"
+                    "\u001b[1;36m▸ INTERACTIVE GAMES & ENTERTAINMENT\u001b[0m\n"
                     "```\n"
                 ),
                 color=0x00d9ff
@@ -280,6 +288,7 @@ class CategorySelect(discord.ui.Select):
                     "```yaml\n"
                     "Usage: /dice\n"
                     "Output: Random number 1-6 with animated result\n"
+                    "Also: Text command !dice and keyword detection\n"
                     "```"
                 ),
                 inline=False
@@ -290,30 +299,21 @@ class CategorySelect(discord.ui.Select):
                     "Challenge another player to an epic dice battle!\n"
                     "```yaml\n"
                     "Usage: /dicebattle @opponent\n"
-                    "Features: Interactive buttons, animated rolls, winner declaration\n"
+                    "Features: Interactive buttons, animated rolls, winner graphics\n"
+                    "Special: Custom battle scenes with dynamic images\n"
                     "```"
                 ),
                 inline=False
             )
             embed.add_field(
-                name="⚡ `/imagine [prompt]`",
+                name="⚡ `/tictactoe @user` or `/ttt @user`",
                 value=(
-                    "Generate stunning AI images from text descriptions\n"
+                    "Start an epic Tic-Tac-Toe battle with a friend!\n"
                     "```yaml\n"
-                    "Usage: /imagine prompt:\"your description\"\n"
-                    "Example: /imagine prompt:\"cyberpunk city at night\"\n"
-                    "Models: Flux, Stable Diffusion, and more\n"
-                    "```"
-                ),
-                inline=False
-            )
-            embed.add_field(
-                name="⚡ `/ask [question]`",
-                value=(
-                    "Ask Molly anything about Whiteout Survival or get general help\n"
-                    "```yaml\n"
-                    "Usage: /ask question:\"your question\"\n"
-                    "Example: /ask question:\"How do I upgrade my furnace?\"\n"
+                    "Usage: /tictactoe @opponent\n"
+                    "Alias: /ttt @opponent (quick start)\n"
+                    "Features: Interactive board, emoji moves, win celebrations\n"
+                    "Stats: Track wins, losses, and draws\n"
                     "```"
                 ),
                 inline=False
@@ -767,6 +767,73 @@ class CategorySelect(discord.ui.Select):
             )
             embed.set_footer(text="⚡ Whiteout Survival Bot // Server Configuration Module")
         
+        elif category == "autotranslate":
+            embed = discord.Embed(
+                title="🌐 AUTO-TRANSLATE // MODULE",
+                description=(
+                    "```ansi\n"
+                    "\u001b[1;36m▸ AUTOMATIC MESSAGE TRANSLATION BETWEEN CHANNELS\u001b[0m\n"
+                    "```\n"
+                ),
+                color=0x00d9ff
+            )
+            embed.add_field(
+                name="⚡ `/autotranslatecreate`",
+                value=(
+                    "Create automatic translation between channels\n"
+                    "```yaml\n"
+                    "Usage: /autotranslatecreate\n"
+                    "Features: Select source/target channels and languages\n"
+                    "```"
+                ),
+                inline=False
+            )
+            embed.add_field(
+                name="⚡ `/autotranslatelist`",
+                value=(
+                    "View all auto-translate configurations\n"
+                    "```yaml\n"
+                    "Usage: /autotranslatelist\n"
+                    "Shows: Active translations, channels, languages\n"
+                    "```"
+                ),
+                inline=False
+            )
+            embed.add_field(
+                name="⚡ `/autotranslateedit`",
+                value=(
+                    "Edit an existing auto-translate configuration\n"
+                    "```yaml\n"
+                    "Usage: /autotranslateedit\n"
+                    "Features: Change languages, channels, or settings\n"
+                    "```"
+                ),
+                inline=False
+            )
+            embed.add_field(
+                name="⚡ `/autotranslatetoggle`",
+                value=(
+                    "Enable/disable an auto-translate configuration\n"
+                    "```yaml\n"
+                    "Usage: /autotranslatetoggle\n"
+                    "Quick: Temporarily disable without deleting\n"
+                    "```"
+                ),
+                inline=False
+            )
+            embed.add_field(
+                name="⚡ `/autotranslatedelete`",
+                value=(
+                    "Delete an auto-translate configuration\n"
+                    "```yaml\n"
+                    "Usage: /autotranslatedelete\n"
+                    "Removes: Selected translation setup\n"
+                    "```"
+                ),
+                inline=False
+            )
+            embed.set_footer(text="⚡ Whiteout Survival Bot // Auto-Translate Module")
+        
         elif category == "utility":
             embed = discord.Embed(
                 title="🔧 UTILITY & TOOLS // MODULE",
@@ -778,23 +845,13 @@ class CategorySelect(discord.ui.Select):
                 color=0x00d9ff
             )
             embed.add_field(
-                name="⚡ `/search [query]`",
+                name="⚡ `/websearch [query]`",
                 value=(
-                    "Search the web and return top results\n"
+                    "Search the web with powerful, organized results\n"
                     "```yaml\n"
-                    "Usage: /search query:\"your search term\"\n"
-                    "Example: /search query:\"Whiteout Survival tips\"\n"
-                    "```"
-                ),
-                inline=False
-            )
-            embed.add_field(
-                name="⚡ `/help`",
-                value=(
-                    "Show this command information center\n"
-                    "```yaml\n"
-                    "Usage: /help\n"
-                    "Features: Interactive category navigation, detailed docs\n"
+                    "Usage: /websearch query:\"your search term\"\n"
+                    "Example: /websearch query:\"Whiteout Survival tips\"\n"
+                    "Features: Top results with summaries and links\n"
                     "```"
                 ),
                 inline=False

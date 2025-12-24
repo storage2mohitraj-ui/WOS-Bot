@@ -9,11 +9,12 @@ import discord
 
 from gift_codes import get_active_gift_codes
 try:
-    from db.mongo_adapters import mongo_enabled, GiftcodeStateAdapter, GiftCodesAdapter
+    from db.mongo_adapters import mongo_enabled, GiftcodeStateAdapter, GiftCodesAdapter, SentGiftCodesAdapter
 except Exception:
     mongo_enabled = lambda: False
     GiftcodeStateAdapter = None
     GiftCodesAdapter = None
+    SentGiftCodesAdapter = None
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,45 @@ class GiftCodePoster:
             self.state.setdefault('initialized', False)
         except Exception:
             pass
+        
+        # === MIGRATION: Sync existing codes to SentGiftCodesAdapter ===
+        try:
+            if mongo_enabled() and SentGiftCodesAdapter is not None:
+                # Check if migration has been done
+                if not self.state.get('migrated_to_sent_adapter', False):
+                    logger.info("🔄 Starting migration of sent codes to SentGiftCodesAdapter...")
+                    migration_count = 0
+                    
+                    # Migrate guild-specific codes
+                    sent_data = self.state.get('sent', {})
+                    for guild_id_str, codes in sent_data.items():
+                        if guild_id_str == 'global':
+                            continue  # Skip global for now
+                        
+                        try:
+                            guild_id = int(guild_id_str)
+                            if codes:
+                                normalized_codes = [self._normalize_code(c) for c in codes if c]
+                                if normalized_codes:
+                                    success = SentGiftCodesAdapter.mark_codes_sent(
+                                        guild_id=guild_id,
+                                        codes=normalized_codes,
+                                        source='migration'
+                                    )
+                                    if success:
+                                        migration_count += len(normalized_codes)
+                                        logger.info(f"✅ Migrated {len(normalized_codes)} codes for guild {guild_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to migrate codes for guild {guild_id_str}: {e}")
+                    
+                    # Mark migration as complete
+                    self.state['migrated_to_sent_adapter'] = True
+                    self._save_state_sync()
+                    logger.info(f"🎯 Migration complete: {migration_count} total codes migrated to MongoDB")
+                else:
+                    logger.debug("Migration already completed, skipping")
+        except Exception as e:
+            logger.warning(f"Migration to SentGiftCodesAdapter failed (non-fatal): {e}")
 
     def _save_state_sync(self):
         try:
@@ -141,27 +181,44 @@ class GiftCodePoster:
         async with self.lock:
             sent_list = self.state.setdefault('sent', {}).setdefault(str(guild_id), [])
             sent = set(self._normalize_code(c) for c in (sent_list or []))
+            
+            new_codes = []
             for c in (codes or []):
                 if c:
-                    sent.add(self._normalize_code(c))
+                    normalized = self._normalize_code(c)
+                    if normalized not in sent:
+                        new_codes.append(normalized)
+                        sent.add(normalized)
+            
+            # Only update if there are new codes
+            if not new_codes:
+                logger.debug(f"No new codes to mark for guild {guild_id}")
+                return
+            
             # store back
             # keep deterministic order
             self.state['sent'][str(guild_id)] = list(sorted(sent))
             
-            # Dual-write strategy: Try both MongoDB and local file to ensure durability
+            # === PRIMARY STORAGE: MongoDB (Preferred) ===
             mongo_success = False
+            if mongo_enabled() and SentGiftCodesAdapter is not None:
+                try:
+                    # Use the dedicated SentGiftCodesAdapter for robust tracking
+                    mongo_success = SentGiftCodesAdapter.mark_codes_sent(
+                        guild_id=guild_id,
+                        codes=new_codes,
+                        source='auto'
+                    )
+                    if mongo_success:
+                        logger.info(f"✅ MongoDB: Marked {len(new_codes)} new codes as sent for guild {guild_id}")
+                    else:
+                        logger.warning(f"⚠️ MongoDB: Failed to mark codes (returned False) for guild {guild_id}")
+                except Exception as e:
+                    logger.error(f"❌ MongoDB: Exception marking codes for guild {guild_id}: {e}")
+                    mongo_success = False
+            
+            # === FALLBACK STORAGE: Local JSON File ===
             file_success = False
-            
-            # Try MongoDB first
-            try:
-                if mongo_enabled() and GiftcodeStateAdapter is not None:
-                    GiftcodeStateAdapter.set_state(self.state)
-                    mongo_success = True
-                    logger.info(f"✅ State saved to MongoDB for guild {guild_id}")
-            except Exception as e:
-                logger.error(f"❌ MongoDB save failed for guild {guild_id}: {e}")
-            
-            # Always save to local file as backup
             try:
                 import os
                 os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -169,24 +226,34 @@ class GiftCodePoster:
                     import json
                     json.dump(self.state, f, ensure_ascii=False, indent=2)
                 file_success = True
-                logger.info(f"✅ State saved to local file for guild {guild_id}")
+                logger.info(f"✅ Local File: Saved state for guild {guild_id}")
             except Exception as e:
-                logger.error(f"❌ Local file save failed for guild {guild_id}: {e}")
+                logger.error(f"❌ Local File: Failed to save state for guild {guild_id}: {e}")
             
-            # Log success/failure
-            if mongo_success and file_success:
-                logger.info(f"✅ Dual-write success: State persisted to both MongoDB and file for guild {guild_id}")
-            elif mongo_success or file_success:
-                logger.warning(f"⚠️ Partial success: State saved to {'MongoDB' if mongo_success else 'file'} only for guild {guild_id}")
+            # === BACKUP: Legacy GiftcodeStateAdapter ===
+            state_adapter_success = False
+            if mongo_enabled() and GiftcodeStateAdapter is not None:
+                try:
+                    state_adapter_success = GiftcodeStateAdapter.set_state(self.state)
+                    if state_adapter_success:
+                        logger.debug(f"✅ GiftcodeStateAdapter: Saved state for guild {guild_id}")
+                except Exception as e:
+                    logger.debug(f"GiftcodeStateAdapter save failed: {e}")
+            
+            # === Log Persistence Results ===
+            if mongo_success:
+                logger.info(f"🎯 SUCCESS: Codes persisted to MongoDB for guild {guild_id}")
+            elif file_success or state_adapter_success:
+                logger.warning(f"⚠️ PARTIAL: Codes saved to fallback storage only for guild {guild_id}")
             else:
-                logger.error(f"❌ CRITICAL: Failed to persist state to any storage backend for guild {guild_id}")
+                logger.error(f"❌ CRITICAL: All persistence methods failed for guild {guild_id}")
                 
         # Also persist each new code into the Mongo `gift_codes` collection
         try:
             if mongo_enabled() and GiftCodesAdapter is not None:
                 from datetime import datetime as _dt
                 now = _dt.utcnow().isoformat()
-                for c in (codes or []):
+                for c in (new_codes or []):
                     if not c:
                         continue
                     try:
@@ -199,11 +266,29 @@ class GiftCodePoster:
 
     async def get_sent_set(self, guild_id: int):
         async with self.lock:
+            # === PRIMARY SOURCE: MongoDB (Most Reliable) ===
+            if mongo_enabled() and SentGiftCodesAdapter is not None:
+                try:
+                    mongo_codes = SentGiftCodesAdapter.get_sent_codes(guild_id)
+                    if mongo_codes:
+                        logger.debug(f"📊 MongoDB: Retrieved {len(mongo_codes)} sent codes for guild {guild_id}")
+                        return mongo_codes
+                    else:
+                        logger.debug(f"MongoDB: No codes found for guild {guild_id}, checking fallback storage")
+                except Exception as e:
+                    logger.warning(f"⚠️ MongoDB retrieval failed for guild {guild_id}: {e}, using fallback")
+            
+            # === FALLBACK: Local State (Legacy) ===
             sent = self.state.setdefault('sent', {})
             guild_codes = sent.setdefault(str(guild_id), [])
             global_codes = sent.setdefault('global', [])
             combined = list((guild_codes or []) + (global_codes or []))
-            return set(self._normalize_code(c) for c in combined if c)
+            fallback_set = set(self._normalize_code(c) for c in combined if c)
+            
+            if fallback_set:
+                logger.debug(f"📂 Fallback: Retrieved {len(fallback_set)} sent codes for guild {guild_id}")
+            
+            return fallback_set
 
 
 poster = GiftCodePoster()

@@ -484,6 +484,202 @@ class GiftCodesAdapter:
             return False
 
 
+class SentGiftCodesAdapter:
+    """Adapter for tracking sent gift codes per guild to prevent duplicates"""
+    COLL = 'sent_giftcodes'
+
+    @staticmethod
+    def mark_codes_sent(guild_id: int, codes: list, source: str = 'auto') -> bool:
+        """
+        Mark gift codes as sent for a specific guild
+        
+        Args:
+            guild_id: Discord guild ID
+            codes: List of gift code strings
+            source: Source of the send (e.g., 'auto', 'api', 'website')
+        
+        Returns:
+            bool: True if successful
+        """
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            
+            # Normalize codes (uppercase, strip whitespace)
+            normalized_codes = [str(code).strip().upper() for code in codes if code]
+            
+            # Batch insert/update all codes for this guild
+            for code in normalized_codes:
+                db[SentGiftCodesAdapter.COLL].update_one(
+                    {'_id': f"{guild_id}:{code}"},  # Composite key: guild_id:code
+                    {
+                        '$set': {
+                            'guild_id': int(guild_id),
+                            'code': code,
+                            'source': source,
+                            'sent_at': now,
+                            'updated_at': now
+                        },
+                        '$setOnInsert': {'created_at': now}
+                    },
+                    upsert=True
+                )
+            
+            logger.info(f"✅ Marked {len(normalized_codes)} codes as sent for guild {guild_id} (source: {source})")
+            return True
+        except Exception as e:
+            logger.error(f'Failed to mark codes as sent for guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def get_sent_codes(guild_id: int) -> set:
+        """
+        Get all codes that have been sent to a guild
+        
+        Args:
+            guild_id: Discord guild ID
+        
+        Returns:
+            set: Set of normalized code strings
+        """
+        try:
+            db = _get_db()
+            docs = db[SentGiftCodesAdapter.COLL].find({'guild_id': int(guild_id)})
+            codes = {doc.get('code', '').upper() for doc in docs if doc.get('code')}
+            logger.debug(f"Retrieved {len(codes)} sent codes for guild {guild_id}")
+            return codes
+        except Exception as e:
+            logger.error(f'Failed to get sent codes for guild {guild_id}: {e}')
+            return set()
+
+    @staticmethod
+    def is_code_sent(guild_id: int, code: str) -> bool:
+        """
+        Check if a specific code has been sent to a guild
+        
+        Args:
+            guild_id: Discord guild ID
+            code: Gift code string
+        
+        Returns:
+            bool: True if code was already sent
+        """
+        try:
+            db = _get_db()
+            normalized_code = str(code).strip().upper()
+            doc = db[SentGiftCodesAdapter.COLL].find_one({
+                '_id': f"{guild_id}:{normalized_code}"
+            })
+            return doc is not None
+        except Exception as e:
+            logger.error(f'Failed to check if code {code} was sent to guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def batch_check_codes(guild_id: int, codes: list) -> dict:
+        """
+        Batch check which codes have been sent to a guild
+        
+        Args:
+            guild_id: Discord guild ID
+            codes: List of gift code strings
+        
+        Returns:
+            dict: Dictionary mapping code -> bool (True if sent, False if not)
+        """
+        try:
+            db = _get_db()
+            normalized_codes = [str(code).strip().upper() for code in codes if code]
+            
+            # Build list of composite IDs to check
+            ids_to_check = [f"{guild_id}:{code}" for code in normalized_codes]
+            
+            # Find all existing documents
+            docs = db[SentGiftCodesAdapter.COLL].find({
+                '_id': {'$in': ids_to_check}
+            })
+            
+            # Create set of sent codes
+            sent_codes = {doc.get('code', '').upper() for doc in docs if doc.get('code')}
+            
+            # Return mapping
+            return {code: (code in sent_codes) for code in normalized_codes}
+        except Exception as e:
+            logger.error(f'Failed to batch check codes for guild {guild_id}: {e}')
+            # Return all False on error
+            return {str(code).strip().upper(): False for code in codes if code}
+
+    @staticmethod
+    def get_all_sent_codes_global() -> set:
+        """
+        Get all codes that have been sent to any guild (global deduplication)
+        
+        Returns:
+            set: Set of normalized code strings
+        """
+        try:
+            db = _get_db()
+            docs = db[SentGiftCodesAdapter.COLL].find({})
+            codes = {doc.get('code', '').upper() for doc in docs if doc.get('code')}
+            logger.debug(f"Retrieved {len(codes)} globally sent codes")
+            return codes
+        except Exception as e:
+            logger.error(f'Failed to get globally sent codes: {e}')
+            return set()
+
+    @staticmethod
+    def clear_guild_codes(guild_id: int) -> bool:
+        """
+        Clear all sent codes for a specific guild (admin operation)
+        
+        Args:
+            guild_id: Discord guild ID
+        
+        Returns:
+            bool: True if successful
+        """
+        try:
+            db = _get_db()
+            result = db[SentGiftCodesAdapter.COLL].delete_many({'guild_id': int(guild_id)})
+            logger.info(f"Cleared {result.deleted_count} sent codes for guild {guild_id}")
+            return True
+        except Exception as e:
+            logger.error(f'Failed to clear sent codes for guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def get_stats(guild_id: int) -> dict:
+        """
+        Get statistics about sent codes for a guild
+        
+        Args:
+            guild_id: Discord guild ID
+        
+        Returns:
+            dict: Statistics including total codes, last sent time, etc.
+        """
+        try:
+            db = _get_db()
+            docs = list(db[SentGiftCodesAdapter.COLL].find({'guild_id': int(guild_id)}).sort('sent_at', -1))
+            
+            if not docs:
+                return {
+                    'total_codes': 0,
+                    'last_sent_at': None,
+                    'last_code': None
+                }
+            
+            return {
+                'total_codes': len(docs),
+                'last_sent_at': docs[0].get('sent_at'),
+                'last_code': docs[0].get('code'),
+                'sources': list({doc.get('source', 'unknown') for doc in docs})
+            }
+        except Exception as e:
+            logger.error(f'Failed to get stats for guild {guild_id}: {e}')
+            return {'total_codes': 0, 'last_sent_at': None, 'last_code': None}
+
+
 class AutoRedeemSettingsAdapter:
     """Adapter for managing auto redeem settings in MongoDB"""
     COLL = 'auto_redeem_settings'

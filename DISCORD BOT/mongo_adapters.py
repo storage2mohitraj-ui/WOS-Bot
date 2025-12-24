@@ -107,6 +107,10 @@ except Exception as e:
             return None
         
         @staticmethod
+        def get_all_settings():
+            return []
+        
+        @staticmethod
         def set_enabled(guild_id: int, enabled: bool, updated_by: int):
             return False
 
