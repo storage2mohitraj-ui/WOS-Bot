@@ -1442,188 +1442,236 @@ class RemoteAccess(commands.Cog):
                 )
                 return
             
-            # Check if the guild has any text channels
-            text_channels = [c for c in guild.text_channels if c.permissions_for(guild.me).send_messages]
-            
-            if not text_channels:
+            # Import ServerAllianceAdapter to get available alliances
+            try:
+                from db.mongo_adapters import ServerAllianceAdapter, mongo_enabled
+            except:
                 await interaction.response.send_message(
-                    "❌ No accessible text channels found in this server.",
+                    "❌ MongoDB not enabled. Alliance monitoring requires MongoDB.",
                     ephemeral=True
                 )
                 return
             
-            # Create channel selection dropdown
-            options = [
-                discord.SelectOption(
-                    label=f"{channel.name[:90]}",
-                    value=str(channel.id),
-                    description=f"Category: {channel.category.name if channel.category else 'None'}",
-                    emoji="📝"
+            # Get the current server's assigned alliance
+            current_alliance = ServerAllianceAdapter.get_alliance(guild.id)
+            
+            # Get all available alliances from the alliance database
+            available_alliances = []
+            try:
+                # Import the database connection function
+                from db_utils import get_db_connection
+                
+                with get_db_connection('alliance.sqlite') as alliance_db:
+                    cursor = alliance_db.cursor()
+                    cursor.execute("SELECT alliance_id, name FROM alliance_list ORDER BY name")
+                    available_alliances = cursor.fetchall()
+            except Exception as db_error:
+                print(f"Error fetching alliances: {db_error}")
+            
+            if not available_alliances:
+                await interaction.response.send_message(
+                    "❌ No alliances found in the database.\n\nPlease ensure alliances have been synced first.",
+                    ephemeral=True
                 )
-                for channel in sorted(text_channels, key=lambda c: c.position)[:25]
+                return
+            
+            # Create alliance selection dropdown
+            alliance_options = [
+                discord.SelectOption(
+                    label=f"{name[:90]}",
+                    value=str(alliance_id),
+                    description=f"ID: {alliance_id}" + (" (Currently assigned)" if str(alliance_id) == str(current_alliance) else ""),
+                    emoji="🏰"
+                )
+                for alliance_id, name in available_alliances[:25]
             ]
             
-            select = discord.ui.Select(
-                placeholder="Select channel for alliance monitoring...",
-                options=options,
-                custom_id="select_alliance_monitor_channel"
+            alliance_select = discord.ui.Select(
+                placeholder="Select an alliance to monitor...",
+                options=alliance_options,
+                custom_id="select_alliance_to_monitor"
             )
             
-            async def channel_selected(select_interaction: discord.Interaction):
-                channel_id = int(select_interaction.data["values"][0])
-                monitor_channel = guild.get_channel(channel_id)
+            async def alliance_selected(select_interaction: discord.Interaction):
+                selected_alliance_id = select_interaction.data["values"][0]
                 
-                if not monitor_channel:
+                # Get alliance name
+                alliance_name = "Unknown Alliance"
+                try:
+                    from db_utils import get_db_connection
+                    with get_db_connection('alliance.sqlite') as alliance_db:
+                        cursor = alliance_db.cursor()
+                        cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (selected_alliance_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            alliance_name = result[0]
+                except:
+                    pass
+                
+                # Now show channel selection for this alliance
+                text_channels = [c for c in guild.text_channels if c.permissions_for(guild.me).send_messages]
+                
+                if not text_channels:
                     await select_interaction.response.send_message(
-                        "❌ Channel not found.",
+                        "❌ No accessible text channels found in this server.",
                         ephemeral=True
                     )
                     return
                 
-                # Show configuration modal
-                from discord.ui import Modal, TextInput
+                # Create channel selection dropdown
+                channel_options = [
+                    discord.SelectOption(
+                        label=f"{channel.name[:90]}",
+                        value=str(channel.id),
+                        description=f"Category: {channel.category.name if channel.category else 'None'}",
+                        emoji="📝"
+                    )
+                    for channel in sorted(text_channels, key=lambda c: c.position)[:25]
+                ]
                 
-                class AllianceMonitorModal(Modal, title="Alliance Monitor Setup"):
-                    alliance_id = TextInput(
-                        label="Alliance ID",
-                        placeholder="Enter the alliance ID to monitor...",
-                        required=True,
-                        max_length=20
-                    )
+                channel_select = discord.ui.Select(
+                    placeholder="Select channel for monitoring updates...",
+                    options=channel_options,
+                    custom_id="select_monitor_channel"
+                )
+                
+                async def channel_selected(channel_interaction: discord.Interaction):
+                    channel_id = int(channel_interaction.data["values"][0])
+                    monitor_channel = guild.get_channel(channel_id)
                     
-                    check_interval = TextInput(
-                        label="Check Interval (minutes)",
-                        placeholder="How often to check (e.g., 5, 10, 15)",
-                        required=False,
-                        max_length=3,
-                        default="10"
-                    )
+                    if not monitor_channel:
+                        await channel_interaction.response.send_message(
+                            "❌ Channel not found.",
+                            ephemeral=True
+                        )
+                        return
                     
-                    def __init__(self, parent_cog, target_channel, target_guild):
-                        super().__init__()
-                        self.parent_cog = parent_cog
-                        self.channel = target_channel
-                        self.guild = target_guild
-                    
-                    async def on_submit(self, modal_int: discord.Interaction):
-                        try:
-                            await modal_int.response.defer(ephemeral=True)
-                            
-                            alliance_id_value = self.alliance_id.value.strip()
-                            
-                            # Parse interval
-                            try:
-                                interval = int(self.check_interval.value.strip()) if self.check_interval.value.strip() else 10
-                                interval = max(5, min(60, interval))  # Clamp between 5 and 60 minutes
-                            except:
-                                interval = 10
-                            
-                            # Get alliance cog
-                            alliance_cog = self.parent_cog.bot.get_cog('Alliance')
-                            
-                            if not alliance_cog:
-                                await modal_int.followup.send(
-                                    "❌ Alliance system not available.",
-                                    ephemeral=True
-                                )
-                                return
-                            
-                            # Try to start monitoring
-                            try:
-                                # Store alliance monitor settings for this guild
-                                # This would typically use the alliance cog's methods
-                                # For now, we'll create a simple configuration
-                                
-                                # Check if alliance cog has the required methods
-                                if hasattr(alliance_cog, 'start_monitoring'):
-                                    # Call the existing method if available
-                                    success = await alliance_cog.start_monitoring(
-                                        self.guild.id,
-                                        self.channel.id,
-                                        alliance_id_value,
-                                        interval
-                                    )
-                                    
-                                    if success:
-                                        success_embed = discord.Embed(
-                                            title="✅ Alliance Monitor Started",
-                                            description=(
-                                                f"**Alliance ID:** `{alliance_id_value}`\n"
-                                                f"**Channel:** {self.channel.mention}\n"
-                                                f"**Server:** {self.guild.name}\n"
-                                                f"**Check Interval:** {interval} minutes\n\n"
-                                                f"The bot will now monitor alliance changes and post updates to the channel."
-                                            ),
-                                            color=0x57F287
-                                        )
-                                        
-                                        await modal_int.followup.send(embed=success_embed, ephemeral=True)
-                                        
-                                        # Also send a message to the target channel
-                                        try:
-                                            channel_embed = discord.Embed(
-                                                title="🛡️ Alliance Monitoring Started",
-                                                description=(
-                                                    f"Now monitoring alliance **{alliance_id_value}**\n\n"
-                                                    f"**Check Interval:** Every {interval} minutes\n"
-                                                    f"**Started by:** {modal_int.user.mention}\n\n"
-                                                    f"Updates will be posted here automatically."
-                                                ),
-                                                color=0x5865F2
-                                            )
-                                            await self.channel.send(embed=channel_embed)
-                                        except:
-                                            pass  # Not critical if this fails
-                                    else:
-                                        await modal_int.followup.send(
-                                            "❌ Failed to start alliance monitoring. Please check the alliance ID.",
-                                            ephemeral=True
-                                        )
-                                else:
-                                    # If the method doesn't exist, provide instructions
-                                    info_embed = discord.Embed(
-                                        title="🛡️ Alliance Monitor Configuration",
-                                        description=(
-                                            f"**Alliance ID:** `{alliance_id_value}`\n"
-                                            f"**Channel:** {self.channel.mention}\n"
-                                            f"**Server:** {self.guild.name}\n"
-                                            f"**Check Interval:** {interval} minutes\n\n"
-                                            f"To activate monitoring, please use `/alliancemonitor` command in {self.guild.name} "
-                                            f"with the following details:\n\n"
-                                            f"• **Alliance ID:** `{alliance_id_value}`\n"
-                                            f"• **Channel:** {self.channel.mention}\n"
-                                            f"• **Interval:** {interval} minutes"
-                                        ),
-                                        color=0x5865F2
-                                    )
-                                    
-                                    await modal_int.followup.send(embed=info_embed, ephemeral=True)
-                                
-                            except Exception as start_error:
-                                print(f"Error starting alliance monitor: {start_error}")
-                                import traceback
-                                traceback.print_exc()
-                                await modal_int.followup.send(
-                                    f"❌ Error starting monitoring: {str(start_error)}",
-                                    ephemeral=True
-                                )
+                    # Save monitoring configuration
+                    try:
+                        await channel_interaction.response.defer(ephemeral=True)
                         
-                        except Exception as e:
-                            print(f"Alliance monitor setup error: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            await modal_int.followup.send(
-                                f"❌ An error occurred: {str(e)}",
-                                ephemeral=True
+                        # Import database utilities
+                        from db_utils import get_db_connection
+                        
+                        # Get member count for this alliance
+                        members = []
+                        if hasattr(alliance_cog, '_get_monitoring_members'):
+                            members = alliance_cog._get_monitoring_members(selected_alliance_id)
+                        member_count = len(members) if members else 0
+                        
+                        # Save to database
+                        with get_db_connection('settings.sqlite') as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                INSERT OR REPLACE INTO alliance_monitoring 
+                                (guild_id, alliance_id, channel_id, enabled, updated_at)
+                                VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+                            """, (guild.id, selected_alliance_id, channel_id))
+                            conn.commit()
+                        
+                        # Save to MongoDB if enabled
+                        if mongo_enabled():
+                            try:
+                                from db.mongo_adapters import AllianceMonitoringAdapter
+                                AllianceMonitoringAdapter.upsert_monitor(guild.id, selected_alliance_id, channel_id, enabled=1)
+                            except:
+                                pass
+                        
+                        # Initialize member history if available
+                        if members:
+                            with get_db_connection('settings.sqlite') as conn:
+                                cursor = conn.cursor()
+                                for fid, nickname, furnace_lv in members:
+                                    cursor.execute("""
+                                        INSERT OR REPLACE INTO member_history 
+                                        (fid, alliance_id, nickname, furnace_lv, last_checked)
+                                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                                    """, (str(fid), selected_alliance_id, nickname, furnace_lv))
+                                conn.commit()
+                        
+                        # Create success embed
+                        success_embed = discord.Embed(
+                            title="✅ Alliance Monitoring Started",
+                            description=(
+                                f"**Alliance:** {alliance_name}\n"
+                                f"**Alliance ID:** `{selected_alliance_id}`\n"
+                                f"**Channel:** {monitor_channel.mention}\n"
+                                f"**Server:** {guild.name}\n"
+                                f"**Members Tracked:** {member_count}\n\n"
+                                f"**Monitoring Active** ✅\n"
+                                f"The system will check for changes every 4 minutes.\n\n"
+                                f"**Tracked Changes:**\n"
+                                f"• 👤 Name changes\n"
+                                f"• 🔥 Furnace level changes\n"
+                                f"• 🖼️ Avatar changes"
+                            ),
+                            color=0x57F287
+                        )
+                        
+                        await channel_interaction.followup.send(embed=success_embed, ephemeral=True)
+                        
+                        # Send notification to the monitoring channel
+                        try:
+                            channel_embed = discord.Embed(
+                                title="🛡️ Alliance Monitoring Started",
+                                description=(
+                                    f"Now monitoring **{alliance_name}** (ID: `{selected_alliance_id}`)\n\n"
+                                    f"**Check Frequency:** Every 4 minutes\n"
+                                    f"**Started by:** {channel_interaction.user.mention}\n\n"
+                                    f"Updates will be posted here automatically."
+                                ),
+                                color=0x5865F2
                             )
+                            await monitor_channel.send(embed=channel_embed)
+                        except:
+                            pass  # Not critical if this fails
+                        
+                        print(f"Remote alliance monitoring configured: Alliance {selected_alliance_id} in channel {channel_id} for guild {guild.id}")
+                        
+                    except Exception as save_error:
+                        print(f"Error saving monitoring config: {save_error}")
+                        import traceback
+                        traceback.print_exc()
+                        await channel_interaction.followup.send(
+                            f"❌ Error saving monitoring configuration: {str(save_error)}",
+                            ephemeral=True
+                        )
                 
-                modal = AllianceMonitorModal(self, monitor_channel, guild)
-                await select_interaction.response.send_modal(modal)
+                channel_select.callback = channel_selected
+                
+                channel_view = discord.ui.View(timeout=300)
+                channel_view.add_item(channel_select)
+                
+                # Back button
+                back_button = discord.ui.Button(
+                    label="◀ Back",
+                    emoji="🏰",
+                    style=discord.ButtonStyle.secondary
+                )
+                back_button.callback = lambda i: self.show_server_management(i, guild)
+                channel_view.add_item(back_button)
+                
+                channel_embed = discord.Embed(
+                    title=f"🛡️ Monitor: {alliance_name}",
+                    description=(
+                        f"**Selected Alliance:** {alliance_name}\n"
+                        f"**Alliance ID:** `{selected_alliance_id}`\n\n"
+                        "Now select the channel where monitoring updates should be posted.\n\n"
+                        "**What will be monitored:**\n"
+                        "• 👤 Player name changes\n"
+                        "• 🔥 Furnace level changes\n"
+                        "• 🖼️ Avatar changes\n\n"
+                        "Select a channel from the dropdown below."
+                    ),
+                    color=0x5865F2
+                )
+                
+                await select_interaction.response.edit_message(embed=channel_embed, view=channel_view)
             
-            select.callback = channel_selected
+            alliance_select.callback = alliance_selected
             
             view = discord.ui.View(timeout=300)
-            view.add_item(select)
+            view.add_item(alliance_select)
             
             # Back button
             back_button = discord.ui.Button(
@@ -1638,16 +1686,24 @@ class RemoteAccess(commands.Cog):
                 title=f"🛡️ Alliance Monitor for {guild.name}",
                 description=(
                     "**Remote Alliance Monitoring Setup**\n\n"
-                    "Select a channel where alliance updates will be posted.\n\n"
+                    "**Step 1:** Select the alliance you want to monitor\n"
+                    "**Step 2:** Choose the channel for updates (next screen)\n\n"
                     "**Features:**\n"
                     "• Monitor alliance member changes\n"
-                    "• Track member join/leave events\n"
-                    "• Customizable check interval\n"
-                    "• Automatic updates\n\n"
-                    "Select a channel from the dropdown below to continue."
+                    "• Track name, furnace, and avatar changes\n"
+                    "• Automatic updates every 4 minutes\n"
+                    "• Real-time notifications\n\n"
+                    "Select an alliance from the dropdown below to continue."
                 ),
                 color=0x5865F2
             )
+            
+            if current_alliance:
+                embed.add_field(
+                    name="📌 Current Server Alliance",
+                    value=f"This server is currently assigned to alliance `{current_alliance}`",
+                    inline=False
+                )
             
             await interaction.response.edit_message(embed=embed, view=view)
             
