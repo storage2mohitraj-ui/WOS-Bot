@@ -1314,48 +1314,73 @@ class ManageGiftCode(commands.Cog):
     async def process_existing_codes_on_startup(self):
         """Check for existing codes that haven't been auto-redeemed and trigger auto-redeem for them"""
         try:
+            # Add a small delay to ensure bot is fully ready
+            await asyncio.sleep(5)
+            
+            self.logger.info("🚀 === STARTUP AUTO-REDEEM CHECK ===")
             self.logger.info("Checking for existing unprocessed gift codes on startup...")
             
             unprocessed_codes = []
             
             # Try MongoDB first
+            mongo_attempted = False
             if mongo_enabled() and GiftCodesAdapter:
                 try:
+                    mongo_attempted = True
+                    self.logger.info("📊 Attempting to fetch codes from MongoDB...")
                     # Get all codes from MongoDB
                     all_codes = GiftCodesAdapter.get_all_codes()
-                    # Filter for unprocessed codes
-                    unprocessed_codes = [
-                        (code['giftcode'], code.get('date', ''))
-                        for code in all_codes
-                        if not code.get('auto_redeem_processed', False)
-                    ]
-                    self.logger.info(f"Found {len(unprocessed_codes)} unprocessed codes in MongoDB")
+                    if all_codes:
+                        # Filter for unprocessed codes
+                        unprocessed_codes = [
+                            (code['giftcode'], code.get('date', ''))
+                            for code in all_codes
+                            if not code.get('auto_redeem_processed', False)
+                        ]
+                        self.logger.info(f"✅ MongoDB: Found {len(unprocessed_codes)} unprocessed out of {len(all_codes)} total codes")
+                        if unprocessed_codes:
+                            self.logger.info(f"📝 Unprocessed codes: {[c[0] for c in unprocessed_codes]}")
+                    else:
+                        self.logger.info("ℹ️ MongoDB: No codes in collection")
                 except Exception as e:
-                    self.logger.warning(f"Failed to get unprocessed codes from MongoDB: {e}")
+                    self.logger.warning(f"⚠️ MongoDB failed: {e}, falling back to SQLite")
+            elif mongo_enabled():
+                self.logger.warning("⚠️ MongoDB enabled but GiftCodesAdapter unavailable")
+            else:
+                self.logger.info("ℹ️ MongoDB not enabled, using SQLite")
             
             # Fallback to SQLite if MongoDB failed or not enabled
-            if not unprocessed_codes and (not mongo_enabled() or not GiftCodesAdapter):
-                self.cursor.execute("""
-                    SELECT giftcode, date 
-                    FROM gift_codes 
-                    WHERE auto_redeem_processed = 0 OR auto_redeem_processed IS NULL
-                """)
-                unprocessed_codes = self.cursor.fetchall()
-                self.logger.info(f"Found {len(unprocessed_codes)} unprocessed codes in SQLite")
+            if not unprocessed_codes and (not mongo_enabled() or not GiftCodesAdapter or not mongo_attempted):
+                try:
+                    self.logger.info("📂 Fetching codes from SQLite database...")
+                    self.cursor.execute("""
+                        SELECT giftcode, date 
+                        FROM gift_codes 
+                        WHERE auto_redeem_processed = 0 OR auto_redeem_processed IS NULL
+                        ORDER BY added_at DESC
+                    """)
+                    unprocessed_codes = self.cursor.fetchall()
+                    self.logger.info(f"✅ SQLite: Found {len(unprocessed_codes)} unprocessed codes")
+                    if unprocessed_codes:
+                        self.logger.info(f"📝 Unprocessed codes: {[c[0] for c in unprocessed_codes]}")
+                except Exception as e:
+                    self.logger.error(f"❌ SQLite fetch failed: {e}")
             
             if not unprocessed_codes:
-                self.logger.info("No unprocessed codes found on startup")
+                self.logger.info("✅ No unprocessed codes found (all codes processed or DB empty)")
+                self.logger.info("🏁 === STARTUP AUTO-REDEEM CHECK COMPLETE ===")
                 return
             
-            self.logger.info(f"Found {len(unprocessed_codes)} total unprocessed codes on startup, triggering auto-redeem...")
+            self.logger.info(f"🎯 FOUND {len(unprocessed_codes)} UNPROCESSED CODES - TRIGGERING AUTO-REDEEM!")
             
             # Trigger auto-redeem for all unprocessed codes
             await self.trigger_auto_redeem_for_new_codes(unprocessed_codes)
             
-            self.logger.info(f"Startup auto-redeem triggered for {len(unprocessed_codes)} codes")
+            self.logger.info(f"✅ Startup auto-redeem triggered for {len(unprocessed_codes)} codes")
+            self.logger.info("🏁 === STARTUP AUTO-REDEEM CHECK COMPLETE ===")
             
         except Exception as e:
-            self.logger.exception(f"Error processing existing codes on startup: {e}")
+            self.logger.exception(f"❌ CRITICAL ERROR in startup auto-redeem check: {e}")
     
     async def notify_admins_new_codes(self, new_codes):
         """Notify global administrators about new gift codes"""
@@ -2669,13 +2694,22 @@ class ManageGiftCode(commands.Cog):
                 row=0
             ))
             
+            # Reset code status button (for testing)
+            view.add_item(discord.ui.Button(
+                label="Reset Code Status",
+                emoji="🔄",
+                style=discord.ButtonStyle.secondary,
+                custom_id="auto_redeem_reset_code",
+                row=1
+            ))
+            
             # Back button
             view.add_item(discord.ui.Button(
                 label="◀ Back",
                 emoji="🏠",
                 style=discord.ButtonStyle.secondary,
                 custom_id="giftcode_auto_redeem",
-                row=1
+                row=2
             ))
             
             await interaction.response.edit_message(embed=embed, view=view)
@@ -3882,6 +3916,191 @@ class ManageGiftCode(commands.Cog):
             embed.set_footer(text=f"Disabled by {interaction.user.name}")
             
             await interaction.response.edit_message(embed=embed, view=None)
+            return
+        
+        # Handle reset code status
+        if custom_id == "auto_redeem_reset_code":
+            if not await self.check_admin_permission(interaction.user.id):
+                await interaction.response.send_message(
+                    "❌ Only administrators can reset code status.",
+                    ephemeral=True
+                )
+                return
+            
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                # Fetch all gift codes from database
+                all_codes = []
+                
+                # Try MongoDB first
+                _mongo_enabled = globals().get('mongo_enabled', lambda: False)
+                if _mongo_enabled() and GiftCodesAdapter:
+                    try:
+                        mongo_codes = GiftCodesAdapter.get_all_codes()
+                        if mongo_codes:
+                            all_codes = [
+                                (
+                                    code.get('giftcode', ''),
+                                    code.get('date', ''),
+                                    code.get('auto_redeem_processed', False)
+                                )
+                                for code in mongo_codes
+                            ]
+                            self.logger.info(f"Fetched {len(all_codes)} codes from MongoDB for reset")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to fetch codes from MongoDB: {e}")
+                
+                # Fallback to SQLite if MongoDB failed or not enabled
+                if not all_codes:
+                    self.cursor.execute("""
+                        SELECT giftcode, date, auto_redeem_processed
+                        FROM gift_codes
+                        ORDER BY added_at DESC
+                    """)
+                    all_codes = self.cursor.fetchall()
+                    self.logger.info(f"Fetched {len(all_codes)} codes from SQLite for reset")
+                
+                if not all_codes:
+                    await interaction.followup.send(
+                        "📋 No gift codes found in the database.",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Limit to most recent 25 codes for dropdown
+                recent_codes = all_codes[:25]
+                
+                # Create dropdown select view
+                class CodeResetSelectView(discord.ui.View):
+                    def __init__(self, codes_list, cog_instance):
+                        super().__init__(timeout=300)
+                        self.codes = codes_list
+                        self.cog = cog_instance
+                        
+                        # Create select menu
+                        options = []
+                        for code, date, processed in self.codes:
+                            status_emoji = "✅" if processed else "⏳"
+                            status_text = "Processed" if processed else "Unprocessed"
+                            
+                            options.append(
+                                discord.SelectOption(
+                                    label=f"{code[:50]}",  # Truncate long codes
+                                    description=f"{status_text} • {date if date else 'No date'}",
+                                    value=code,
+                                    emoji=status_emoji
+                                )
+                            )
+                        
+                        select = discord.ui.Select(
+                            placeholder="Select a code to reset...",
+                            options=options,
+                            custom_id="code_to_reset_select"
+                        )
+                        select.callback = self.reset_code
+                        self.add_item(select)
+                    
+                    async def reset_code(self, select_interaction: discord.Interaction):
+                        try:
+                            await select_interaction.response.defer(ephemeral=True)
+                            
+                            selected_code = select_interaction.data["values"][0]
+                            
+                            # Reset in MongoDB if available
+                            _mongo_enabled = globals().get('mongo_enabled', lambda: False)
+                            mongo_success = False
+                            if _mongo_enabled() and GiftCodesAdapter:
+                                try:
+                                    # Reset auto_redeem_processed to False/0
+                                    GiftCodesAdapter.update_code(
+                                        selected_code,
+                                        {'auto_redeem_processed': False}
+                                    )
+                                    mongo_success = True
+                                    self.cog.logger.info(f"Reset code {selected_code} in MongoDB")
+                                except Exception as e:
+                                    self.cog.logger.error(f"Failed to reset code in MongoDB: {e}")
+                            
+                            # Also reset in SQLite for consistency
+                            sqlite_success = False
+                            try:
+                                self.cog.cursor.execute(
+                                    "UPDATE gift_codes SET auto_redeem_processed = 0 WHERE giftcode = ?",
+                                    (selected_code,)
+                                )
+                                self.cog.giftcode_db.commit()
+                                sqlite_success = True
+                                self.cog.logger.info(f"Reset code {selected_code} in SQLite")
+                            except Exception as e:
+                                self.cog.logger.error(f"Failed to reset code in SQLite: {e}")
+                            
+                            if mongo_success or sqlite_success:
+                                embed = discord.Embed(
+                                    title="✅ Code Status Reset",
+                                    description=(
+                                        f"**Code:** `{selected_code}`\n\n"
+                                        "The auto-redeem processed status has been reset.\n\n"
+                                        "**What happens next:**\n"
+                                        "• This code will be detected as unprocessed\n"
+                                        "• Auto-redeem will trigger for this code on next check\n"
+                                        "• You can test the auto-redeem functionality again\n\n"
+                                        f"**Updated in:** {('MongoDB, ' if mongo_success else '') + ('SQLite' if sqlite_success else '')}"
+                                    ),
+                                    color=0x57F287
+                                )
+                                embed.set_footer(
+                                    text=f"Reset by {select_interaction.user.name}",
+                                    icon_url=select_interaction.user.display_avatar.url
+                                )
+                                await select_interaction.followup.send(embed=embed, ephemeral=True)
+                            else:
+                                await select_interaction.followup.send(
+                                    "❌ Failed to reset code status in both databases.",
+                                    ephemeral=True
+                                )
+                        
+                        except Exception as e:
+                            self.cog.logger.exception(f"Error resetting code: {e}")
+                            try:
+                                await select_interaction.followup.send(
+                                    f"❌ An error occurred: {str(e)}",
+                                    ephemeral=True
+                                )
+                            except:
+                                pass
+                
+                view = CodeResetSelectView(recent_codes, self)
+                
+                embed = discord.Embed(
+                    title="🔄 Reset Code Status",
+                    description=(
+                        f"**Total Codes:** {len(all_codes)}\n"
+                        f"**Showing:** {len(recent_codes)} most recent\n\n"
+                        "Select a code below to reset its auto-redeem processed status.\n\n"
+                        "**Legend:**\n"
+                        "✅ - Already processed\n"
+                        "⏳ - Unprocessed\n\n"
+                        "*Resetting will allow the code to be auto-redeemed again.*"
+                    ),
+                    color=0x5865F2
+                )
+                embed.set_footer(
+                    text=f"{interaction.guild.name} • Magnus🚀",
+                    icon_url="https://cdn.discordapp.com/attachments/1435569370389807144/1436745053442805830/unnamed_5.png"
+                )
+                
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                
+            except Exception as e:
+                self.logger.exception(f"Error in reset code status: {e}")
+                try:
+                    await interaction.followup.send(
+                        f"❌ An error occurred: {str(e)}",
+                        ephemeral=True
+                    )
+                except:
+                    pass
             return
 
 
