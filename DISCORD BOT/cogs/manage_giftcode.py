@@ -2764,6 +2764,15 @@ class ManageGiftCode(commands.Cog):
                 row=1
             ))
             
+            # Delete code button
+            view.add_item(discord.ui.Button(
+                label="Delete Code",
+                emoji="🗑️",
+                style=discord.ButtonStyle.danger,
+                custom_id="auto_redeem_delete_code",
+                row=1
+            ))
+            
             # Back button
             view.add_item(discord.ui.Button(
                 label="◀ Back",
@@ -3898,23 +3907,47 @@ class ManageGiftCode(commands.Cog):
             
             # Update MongoDB first
             _mongo_enabled = globals().get('mongo_enabled', lambda: False)
+            mongo_saved = False
             if _mongo_enabled() and AutoRedeemSettingsAdapter:
                 try:
+                    self.logger.info(f"📊 MongoDB: Saving auto-redeem ENABLED for guild {interaction.guild.id}...")
                     AutoRedeemSettingsAdapter.set_enabled(
                         interaction.guild.id,
                         True,
                         interaction.user.id
                     )
+                    mongo_saved = True
+                    self.logger.info(f"✅ MongoDB: Successfully saved auto-redeem ENABLED for guild {interaction.guild.id}")
                 except Exception as e:
-                    self.logger.error(f"Failed to save auto redeem settings to MongoDB: {e}")
+                    self.logger.error(f"❌ MongoDB: Failed to save auto redeem settings: {e}")
+            else:
+                if not _mongo_enabled():
+                    self.logger.warning("⚠️ MongoDB is not enabled - settings will be lost on restart!")
+                elif not AutoRedeemSettingsAdapter:
+                    self.logger.warning("⚠️ AutoRedeemSettingsAdapter not available - settings will be lost on restart!")
             
             # Also update SQLite for backward compatibility
-            self.cursor.execute("""
-                INSERT OR REPLACE INTO auto_redeem_settings 
-                (guild_id, enabled, updated_by, updated_at)
-                VALUES (?, 1, ?, ?)
-            """, (interaction.guild.id, interaction.user.id, datetime.now()))
-            self.giftcode_db.commit()
+            sqlite_saved = False
+            try:
+                self.logger.info(f"📂 SQLite: Saving auto-redeem ENABLED for guild {interaction.guild.id}...")
+                self.cursor.execute("""
+                    INSERT OR REPLACE INTO auto_redeem_settings 
+                    (guild_id, enabled, updated_by, updated_at)
+                    VALUES (?, 1, ?, ?)
+                """, (interaction.guild.id, interaction.user.id, datetime.now()))
+                self.giftcode_db.commit()
+                sqlite_saved = True
+                self.logger.info(f"✅ SQLite: Successfully saved auto-redeem ENABLED for guild {interaction.guild.id}")
+            except Exception as e:
+                self.logger.error(f"❌ SQLite: Failed to save auto redeem settings: {e}")
+            
+            # Log final persistence status
+            if mongo_saved:
+                self.logger.info(f"🎉 AUTO-REDEEM ENABLED: Settings saved to MongoDB (PERSISTENT on Render)")
+            elif sqlite_saved:
+                self.logger.warning(f"⚠️ AUTO-REDEEM ENABLED: Settings saved to SQLite only (TEMPORARY - will reset on Render restart!)")
+            else:
+                self.logger.error(f"❌ AUTO-REDEEM ENABLED: Failed to save to ANY database!")
             
             embed = discord.Embed(
                 title="✅ Auto Redeem Enabled",
@@ -3944,23 +3977,47 @@ class ManageGiftCode(commands.Cog):
             
             # Update MongoDB first
             _mongo_enabled = globals().get('mongo_enabled', lambda: False)
+            mongo_saved = False
             if _mongo_enabled() and AutoRedeemSettingsAdapter:
                 try:
+                    self.logger.info(f"📊 MongoDB: Saving auto-redeem DISABLED for guild {interaction.guild.id}...")
                     AutoRedeemSettingsAdapter.set_enabled(
                         interaction.guild.id,
                         False,
                         interaction.user.id
                     )
+                    mongo_saved = True
+                    self.logger.info(f"✅ MongoDB: Successfully saved auto-redeem DISABLED for guild {interaction.guild.id}")
                 except Exception as e:
-                    self.logger.error(f"Failed to save auto redeem settings to MongoDB: {e}")
+                    self.logger.error(f"❌ MongoDB: Failed to save auto redeem settings: {e}")
+            else:
+                if not _mongo_enabled():
+                    self.logger.warning("⚠️ MongoDB is not enabled")
+                elif not AutoRedeemSettingsAdapter:
+                    self.logger.warning("⚠️ AutoRedeemSettingsAdapter not available")
             
             # Also update SQLite for backward compatibility
-            self.cursor.execute("""
-                INSERT OR REPLACE INTO auto_redeem_settings 
-                (guild_id, enabled, updated_by, updated_at)
-                VALUES (?, 0, ?, ?)
-            """, (interaction.guild.id, interaction.user.id, datetime.now()))
-            self.giftcode_db.commit()
+            sqlite_saved = False
+            try:
+                self.logger.info(f"📂 SQLite: Saving auto-redeem DISABLED for guild {interaction.guild.id}...")
+                self.cursor.execute("""
+                    INSERT OR REPLACE INTO auto_redeem_settings 
+                    (guild_id, enabled, updated_by, updated_at)
+                    VALUES (?, 0, ?, ?)
+                """, (interaction.guild.id, interaction.user.id, datetime.now()))
+                self.giftcode_db.commit()
+                sqlite_saved = True
+                self.logger.info(f"✅ SQLite: Successfully saved auto-redeem DISABLED for guild {interaction.guild.id}")
+            except Exception as e:
+                self.logger.error(f"❌ SQLite: Failed to save auto redeem settings: {e}")
+            
+            # Log final persistence status
+            if mongo_saved:
+                self.logger.info(f"🚫 AUTO-REDEEM DISABLED: Settings saved to MongoDB (PERSISTENT)")
+            elif sqlite_saved:
+                self.logger.warning(f"⚠️ AUTO-REDEEM DISABLED: Settings saved to SQLite only (TEMPORARY)")
+            else:
+                self.logger.error(f"❌ AUTO-REDEEM DISABLED: Failed to save to ANY database!")
             
             embed = discord.Embed(
                 title="🔴 Auto Redeem Disabled",
@@ -4155,6 +4212,227 @@ class ManageGiftCode(commands.Cog):
                 
             except Exception as e:
                 self.logger.exception(f"Error in reset code status: {e}")
+                try:
+                    await interaction.followup.send(
+                        f"❌ An error occurred: {str(e)}",
+                        ephemeral=True
+                    )
+                except:
+                    pass
+            return
+
+
+        # Handle delete code
+        if custom_id == "auto_redeem_delete_code":
+            if not await self.check_admin_permission(interaction.user.id):
+                await interaction.response.send_message(
+                    "❌ Only administrators can delete codes.",
+                    ephemeral=True
+                )
+                return
+            
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                # Fetch all gift codes from database
+                all_codes = []
+                
+                # Try MongoDB first - but use get_all() instead of get_all_codes()
+                _mongo_enabled = globals().get('mongo_enabled', lambda: False)
+                if _mongo_enabled() and GiftCodesAdapter:
+                    try:
+                        mongo_codes = GiftCodesAdapter.get_all()
+                        if mongo_codes:
+                            all_codes = [
+                                (
+                                    code[0] if isinstance(code, tuple) else code.get('giftcode', ''),
+                                    code[1] if isinstance(code, tuple) and len(code) > 1 else code.get('date', ''),
+                                    False  # Processing status doesn't matter for deletion
+                                )
+                                for code in mongo_codes
+                            ]
+                            self.logger.info(f"Fetched {len(all_codes)} codes from MongoDB for deletion")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to fetch codes from MongoDB: {e}")
+                
+                # Fallback to SQLite if MongoDB failed or not enabled
+                if not all_codes:
+                    try:
+                        self.logger.info("📂 Fetching codes from SQLite database...")
+                        self.cursor.execute("""
+                            SELECT giftcode, date, auto_redeem_processed
+                            FROM gift_codes
+                            ORDER BY added_at DESC
+                        """)
+                        all_codes = self.cursor.fetchall()
+                        self.logger.info(f"Fetched {len(all_codes)} codes from SQLite for deletion")
+                    except Exception as e:
+                        self.logger.error(f"❌ SQLite fetch failed: {e}")
+                
+                if not all_codes:
+                    await interaction.followup.send(
+                        "📋 No gift codes found in the database.",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Limit to most recent 25 codes for dropdown
+                recent_codes = all_codes[:25]
+                
+                # Create dropdown select view
+                class CodeDeleteSelectView(discord.ui.View):
+                    def __init__(self, codes_list, cog_instance):
+                        super().__init__(timeout=300)
+                        self.codes = codes_list
+                        self.cog = cog_instance
+                        
+                        # Create select menu
+                        options = []
+                        for code, date, processed in self.codes:
+                            options.append(
+                                discord.SelectOption(
+                                    label=f"{code[:50]}",  # Truncate long codes
+                                    description=f"Added: {date if date else 'Unknown date'}",
+                                    value=code,
+                                    emoji="🗑️"
+                                )
+                            )
+                        
+                        select = discord.ui.Select(
+                            placeholder="Select a code to delete...",
+                            options=options,
+                            custom_id="code_to_delete_select"
+                        )
+                        select.callback = self.confirm_delete
+                        self.add_item(select)
+                    
+                    async def confirm_delete(self, select_interaction: discord.Interaction):
+                        try:
+                            selected_code = select_interaction.data["values"][0]
+                            
+                            # Create confirmation view
+                            class ConfirmDeleteView(discord.ui.View):
+                                def __init__(self, code_to_delete, cog_instance):
+                                    super().__init__(timeout=60)
+                                    self.code = code_to_delete
+                                    self.cog = cog_instance
+                                
+                                @discord.ui.button(label="Confirm Delete", style=discord.ButtonStyle.danger, emoji="✅")
+                                async def confirm(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                                    await btn_interaction.response.defer(ephemeral=True)
+                                    
+                                    # Delete from MongoDB if available
+                                    _mongo_enabled = globals().get('mongo_enabled', lambda: False)
+                                    mongo_deleted = False
+                                    if _mongo_enabled() and GiftCodesAdapter:
+                                        try:
+                                            # Use the delete method if available, otherwise skip
+                                            if hasattr(GiftCodesAdapter, 'delete'):
+                                                GiftCodesAdapter.delete(self.code)
+                                                mongo_deleted = True
+                                                self.cog.logger.info(f"Deleted code {self.code} from MongoDB")
+                                            else:
+                                                self.cog.logger.info("MongoDB delete method not available, using SQLite only")
+                                        except Exception as e:
+                                            self.cog.logger.error(f"Failed to delete code from MongoDB: {e}")
+                                    
+                                    # Delete from SQLite
+                                    sqlite_deleted = False
+                                    try:
+                                        self.cog.cursor.execute(
+                                            "DELETE FROM gift_codes WHERE giftcode = ?",
+                                            (self.code,)
+                                        )
+                                        rows_affected = self.cog.cursor.rowcount
+                                        self.cog.giftcode_db.commit()
+                                        if rows_affected > 0:
+                                            sqlite_deleted = True
+                                            self.cog.logger.info(f"Deleted code {self.code} from SQLite")
+                                        else:
+                                            self.cog.logger.warning(f"Code {self.code} not found in SQLite")
+                                    except Exception as e:
+                                        self.cog.logger.error(f"Failed to delete code from SQLite: {e}")
+                                    
+                                    if mongo_deleted or sqlite_deleted:
+                                        embed = discord.Embed(
+                                            title="✅ Code Deleted",
+                                            description=(
+                                                f"**Code:** `{self.code}`\n\n"
+                                                "The gift code has been permanently deleted.\n\n"
+                                                "**Deleted from:**\n"
+                                                f"{'• MongoDB ✅\n' if mongo_deleted else ''}"
+                                                f"{'• SQLite ✅\n' if sqlite_deleted else ''}\n"
+                                                "**Note:** This action cannot be undone."
+                                            ),
+                                            color=0x57F287
+                                        )
+                                        embed.set_footer(
+                                            text=f"Deleted by {btn_interaction.user.name}",
+                                            icon_url=btn_interaction.user.display_avatar.url
+                                        )
+                                        await btn_interaction.followup.send(embed=embed, ephemeral=True)
+                                    else:
+                                        await btn_interaction.followup.send(
+                                            "❌ Failed to delete code from both databases.",
+                                            ephemeral=True
+                                        )
+                                
+                                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+                                async def cancel(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                                    embed = discord.Embed(
+                                        title="❌ Deletion Cancelled",
+                                        description="The code was not deleted.",
+                                        color=0x5865F2
+                                    )
+                                    await btn_interaction.response.edit_message(embed=embed, view=None)
+                            
+                            # Show confirmation dialog
+                            confirm_embed = discord.Embed(
+                                title="⚠️ Confirm Code Deletion",
+                                description=(
+                                    f"Are you sure you want to **permanently delete** this code?\n\n"
+                                    f"**Code:** `{selected_code}`\n\n"
+                                    "⚠️ **This action cannot be undone!**\n"
+                                    "The code will be removed from both MongoDB and SQLite databases."
+                                ),
+                                color=0xED4245
+                            )
+                            
+                            confirm_view = ConfirmDeleteView(selected_code, self.cog)
+                            await select_interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
+                        
+                        except Exception as e:
+                            self.cog.logger.exception(f"Error in delete confirmation: {e}")
+                            try:
+                                await select_interaction.followup.send(
+                                    f"❌ An error occurred: {str(e)}",
+                                    ephemeral=True
+                                )
+                            except:
+                                pass
+                
+                view = CodeDeleteSelectView(recent_codes, self)
+                
+                embed = discord.Embed(
+                    title="🗑️ Delete Gift Code",
+                    description=(
+                        f"**Total Codes:** {len(all_codes)}\n"
+                        f"**Showing:** {len(recent_codes)} most recent\n\n"
+                        "Select a code below to permanently delete it.\n\n"
+                        "⚠️ **Warning:** Deleted codes cannot be recovered!\n"
+                        "*You will be asked to confirm before deletion.*"
+                    ),
+                    color=0xED4245
+                )
+                embed.set_footer(
+                    text=f"{interaction.guild.name} • Magnus🚀",
+                    icon_url="https://cdn.discordapp.com/attachments/1435569370389807144/1436745053442805830/unnamed_5.png"
+                )
+                
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                
+            except Exception as e:
+                self.logger.exception(f"Error in delete code: {e}")
                 try:
                     await interaction.followup.send(
                         f"❌ An error occurred: {str(e)}",
