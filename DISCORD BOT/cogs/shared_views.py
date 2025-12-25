@@ -1076,9 +1076,79 @@ class GiftCodeSettingsView(discord.ui.View):
     async def manage_codes_button(self, button_interaction: discord.Interaction, button: discord.ui.Button):
         """
         This button links to the Gift Code Management menu from /manage.
-        It's handled by the ManageGiftcode cog's on_interaction listener.
+        Now protected by password authentication like /manage command.
         """
-        pass
+        try:
+            # Check if MongoDB is available
+            from db.mongo_adapters import ServerAllianceAdapter, AuthSessionsAdapter
+            from utils import mongo_enabled
+            
+            if not mongo_enabled() or not ServerAllianceAdapter:
+                await button_interaction.response.send_message(
+                    "❌ MongoDB not enabled. Cannot access management operations.",
+                    ephemeral=True
+                )
+                return
+            
+            # Check if password is configured
+            stored_password = ServerAllianceAdapter.get_password(button_interaction.guild.id)
+            if not stored_password:
+                error_embed = discord.Embed(
+                    title="🔒 Access Denied",
+                    description="No password configured for management access.",
+                    color=0x2B2D31
+                )
+                error_embed.add_field(
+                    name="⚙️ Administrator Action Required",
+                    value="Contact a server administrator to set up password via:\\n`/settings` → **Bot Operations** → **Set Member List Password**",
+                    inline=False
+                )
+                error_embed.add_field(
+                    name="💬 Need Help?",
+                    value="Contact the Global Admin for assistance with bot setup.",
+                    inline=False
+                )
+                
+                # Create view with contact button
+                class ContactAdminView(discord.ui.View):
+                    def __init__(self):
+                        super().__init__(timeout=None)
+                        self.add_item(discord.ui.Button(
+                            label="Contact Global Admin",
+                            emoji="👤",
+                            style=discord.ButtonStyle.link,
+                            url="https://discord.com/users/850786361572720661"
+                        ))
+                
+                view = ContactAdminView()
+                await button_interaction.response.send_message(embed=error_embed, view=view, ephemeral=True)
+                return
+            
+            # Check if user has valid authentication session
+            if AuthSessionsAdapter and AuthSessionsAdapter.is_session_valid(
+                button_interaction.guild.id,
+                button_interaction.user.id,
+                stored_password
+            ):
+                # User is authenticated - let the button continue to be handled by ManageGiftcode cog
+                # The on_interaction handler will process this
+                pass
+            else:
+                # User needs to authenticate first
+                await button_interaction.response.send_message(
+                    "🔒 **Authentication Required**\\n\\n"
+                    "Please use `/manage` to authenticate first before accessing gift code management.\\n\\n"
+                    "This protects sensitive gift code operations.",
+                    ephemeral=True
+                )
+                return
+                
+        except Exception as e:
+            logger.error(f"Error in manage_codes_button authentication: {e}")
+            await button_interaction.response.send_message(
+                "❌ An error occurred while checking authentication.",
+                ephemeral=True
+            )
 
 
 # Birthday Dashboard View
