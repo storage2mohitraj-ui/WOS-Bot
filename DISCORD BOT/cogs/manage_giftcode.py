@@ -1443,39 +1443,45 @@ class ManageGiftCode(commands.Cog):
             self.logger.info("🔔 === TRIGGER AUTO-REDEEM ===")
             self.logger.info(f"📥 Received {len(new_codes)} codes to process: {[c[0] for c in new_codes]}")
             
-            # Get all guilds with auto-redeem enabled - try MongoDB first
+            # Get all guilds with auto-redeem enabled
             enabled_guilds = []
             
+            # Try MongoDB first - but check if method exists
             mongo_attempted = False
             if mongo_enabled() and AutoRedeemSettingsAdapter:
-                try:
-                    mongo_attempted = True
-                    self.logger.info("📊 Checking MongoDB for enabled guilds...")
-                    # Get all guilds with auto-redeem enabled from MongoDB
-                    all_settings = AutoRedeemSettingsAdapter.get_all_settings()
-                    if all_settings:
-                        self.logger.info(f"📋 Found {len(all_settings)} total guild settings in MongoDB")
-                        enabled_guilds = [
-                            (settings['guild_id'],)
-                            for settings in all_settings
-                            if settings.get('enabled', False)
-                        ]
-                        self.logger.info(f"✅ MongoDB: {len(enabled_guilds)} guilds with auto-redeem ENABLED")
-                        if enabled_guilds:
-                            self.logger.info(f"📝 Enabled guild IDs: {[g[0] for g in enabled_guilds]}")
+                # Check if get_all_settings method exists
+                if hasattr(AutoRedeemSettingsAdapter, 'get_all_settings'):
+                    try:
+                        mongo_attempted = True
+                        self.logger.info("📊 Checking MongoDB for enabled guilds...")
+                        # Get all guilds with auto-redeem enabled from MongoDB
+                        all_settings = AutoRedeemSettingsAdapter.get_all_settings()
+                        if all_settings:
+                            self.logger.info(f"📋 Found {len(all_settings)} total guild settings in MongoDB")
+                            enabled_guilds = [
+                                (settings['guild_id'],)
+                                for settings in all_settings
+                                if settings.get('enabled', False)
+                            ]
+                            self.logger.info(f"✅ MongoDB: {len(enabled_guilds)} guilds with auto-redeem ENABLED")
+                            if enabled_guilds:
+                                self.logger.info(f"📝 Enabled guild IDs: {[g[0] for g in enabled_guilds]}")
+                            else:
+                                self.logger.warning("⚠️ MongoDB: No guilds have auto-redeem enabled!")
                         else:
-                            self.logger.warning("⚠️ MongoDB: No guilds have auto-redeem enabled!")
-                    else:
-                        self.logger.warning("⚠️ MongoDB: No settings found (empty collection)")
-                except Exception as e:
-                    self.logger.error(f"❌ MongoDB get_all_settings failed: {e}")
+                            self.logger.warning("⚠️ MongoDB: No settings found (empty collection)")
+                    except Exception as e:
+                        self.logger.error(f"❌ MongoDB get_all_settings failed: {e}")
+                        mongo_attempted = False  # Force SQLite fallback
+                else:
+                    self.logger.info("ℹ️ MongoDB: get_all_settings() method not available, using SQLite...")
             elif mongo_enabled():
                 self.logger.warning("⚠️ MongoDB enabled but AutoRedeemSettingsAdapter unavailable")
             else:
                 self.logger.info("ℹ️ MongoDB not enabled, checking SQLite...")
             
             # Fallback to SQLite if MongoDB failed or not enabled
-            if not enabled_guilds and (not mongo_enabled() or not AutoRedeemSettingsAdapter or not mongo_attempted):
+            if not enabled_guilds:
                 try:
                     self.logger.info("📂 Checking SQLite for enabled guilds...")
                     self.cursor.execute("""
