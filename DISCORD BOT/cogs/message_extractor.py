@@ -1470,8 +1470,17 @@ class MessageExtractor(commands.Cog):
 class ServerSelect(discord.ui.Select):
     """Dropdown for selecting a server."""
     
-    def __init__(self, guilds: list, for_channels: bool = False):
+    def __init__(self, guilds: list, for_channels: bool = False, page: int = 0):
         self.for_channels = for_channels
+        self.all_guilds = guilds
+        self.page = page
+        self.total_pages = (len(guilds) - 1) // 25 + 1
+        
+        # Calculate start and end indices for current page
+        start_idx = page * 25
+        end_idx = min(start_idx + 25, len(guilds))
+        current_page_guilds = guilds[start_idx:end_idx]
+        
         options = [
             discord.SelectOption(
                 label=guild.name[:100],  # Discord limit
@@ -1479,11 +1488,11 @@ class ServerSelect(discord.ui.Select):
                 value=str(guild.id),
                 emoji="🏰"
             )
-            for guild in guilds[:25]  # Discord limit
+            for guild in current_page_guilds
         ]
         
         super().__init__(
-            placeholder="🔍 Choose a server...",
+            placeholder=f"🔍 Choose a server... (Page {page + 1}/{self.total_pages})",
             min_values=1,
             max_values=1,
             options=options
@@ -1757,23 +1766,149 @@ class LimitSelectionView(discord.ui.View):
 
 
 class ServerSelectionView(discord.ui.View):
-    """View for server selection."""
+    """View for server selection with pagination support."""
     
-    def __init__(self, bot, guilds: list, cog):
+    def __init__(self, bot, guilds: list, cog, page: int = 0):
         super().__init__(timeout=180)
         self.bot = bot
         self.cog = cog
-        self.add_item(ServerSelect(guilds, for_channels=False))
+        self.guilds = guilds
+        self.page = page
+        self.total_pages = max(1, (len(guilds) - 1) // 25 + 1)
+        
+        # Add server select dropdown
+        self.add_item(ServerSelect(guilds, for_channels=False, page=page))
+        
+        # Add pagination buttons if needed
+        if self.total_pages > 1:
+            # Previous button
+            prev_button = discord.ui.Button(
+                label="◀ Previous",
+                style=discord.ButtonStyle.secondary,
+                disabled=(page == 0)
+            )
+            prev_button.callback = self.previous_page
+            self.add_item(prev_button)
+            
+            # Page indicator button (disabled, just for info)
+            page_button = discord.ui.Button(
+                label=f"Page {page + 1}/{self.total_pages}",
+                style=discord.ButtonStyle.secondary,
+                disabled=True
+            )
+            self.add_item(page_button)
+            
+            # Next button
+            next_button = discord.ui.Button(
+                label="Next ▶",
+                style=discord.ButtonStyle.secondary,
+                disabled=(page >= self.total_pages - 1)
+            )
+            next_button.callback = self.next_page
+            self.add_item(next_button)
+    
+    async def previous_page(self, interaction: discord.Interaction):
+        """Navigate to the previous page."""
+        await interaction.response.defer()
+        new_page = max(0, self.page - 1)
+        view = ServerSelectionView(self.bot, self.guilds, self.cog, new_page)
+        
+        embed = discord.Embed(
+            title="🔄 Data Synchronization",
+            description=f"Select a server to synchronize data from:\n\n"
+                       f"**Page {new_page + 1} of {self.total_pages}**",
+            color=discord.Color.blue()
+        )
+        
+        await interaction.edit_original_response(embed=embed, view=view)
+    
+    async def next_page(self, interaction: discord.Interaction):
+        """Navigate to the next page."""
+        await interaction.response.defer()
+        new_page = min(self.total_pages - 1, self.page + 1)
+        view = ServerSelectionView(self.bot, self.guilds, self.cog, new_page)
+        
+        embed = discord.Embed(
+            title="🔄 Data Synchronization",
+            description=f"Select a server to synchronize data from:\n\n"
+                       f"**Page {new_page + 1} of {self.total_pages}**",
+            color=discord.Color.blue()
+        )
+        
+        await interaction.edit_original_response(embed=embed, view=view)
 
 
 class ServerSelectionForChannelsView(discord.ui.View):
-    """View for server selection (for channel listing)."""
+    """View for server selection (for channel listing) with pagination support."""
     
-    def __init__(self, bot, guilds: list, cog):
+    def __init__(self, bot, guilds: list, cog, page: int = 0):
         super().__init__(timeout=180)
         self.bot = bot
         self.cog = cog
-        self.add_item(ServerSelect(guilds, for_channels=True))
+        self.guilds = guilds
+        self.page = page
+        self.total_pages = max(1, (len(guilds) - 1) // 25 + 1)
+        
+        # Add server select dropdown
+        self.add_item(ServerSelect(guilds, for_channels=True, page=page))
+        
+        # Add pagination buttons if needed
+        if self.total_pages > 1:
+            # Previous button
+            prev_button = discord.ui.Button(
+                label="◀ Previous",
+                style=discord.ButtonStyle.secondary,
+                disabled=(page == 0)
+            )
+            prev_button.callback = self.previous_page
+            self.add_item(prev_button)
+            
+            # Page indicator button (disabled, just for info)
+            page_button = discord.ui.Button(
+                label=f"Page {page + 1}/{self.total_pages}",
+                style=discord.ButtonStyle.secondary,
+                disabled=True
+            )
+            self.add_item(page_button)
+            
+            # Next button
+            next_button = discord.ui.Button(
+                label="Next ▶",
+                style=discord.ButtonStyle.secondary,
+                disabled=(page >= self.total_pages - 1)
+            )
+            next_button.callback = self.next_page
+            self.add_item(next_button)
+    
+    async def previous_page(self, interaction: discord.Interaction):
+        """Navigate to the previous page."""
+        await interaction.response.defer()
+        new_page = max(0, self.page - 1)
+        view = ServerSelectionForChannelsView(self.bot, self.guilds, self.cog, new_page)
+        
+        embed = discord.Embed(
+            title="📡 Data Stream Verification",
+            description=f"Select a server to view available data streams:\n\n"
+                       f"**Page {new_page + 1} of {self.total_pages}**",
+            color=discord.Color.green()
+        )
+        
+        await interaction.edit_original_response(embed=embed, view=view)
+    
+    async def next_page(self, interaction: discord.Interaction):
+        """Navigate to the next page."""
+        await interaction.response.defer()
+        new_page = min(self.total_pages - 1, self.page + 1)
+        view = ServerSelectionForChannelsView(self.bot, self.guilds, self.cog, new_page)
+        
+        embed = discord.Embed(
+            title="📡 Data Stream Verification",
+            description=f"Select a server to view available data streams:\n\n"
+                       f"**Page {new_page + 1} of {self.total_pages}**",
+            color=discord.Color.green()
+        )
+        
+        await interaction.edit_original_response(embed=embed, view=view)
 
 
 class ChannelSelectionView(discord.ui.View):
