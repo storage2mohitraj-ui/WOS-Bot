@@ -1427,32 +1427,63 @@ class ManageGiftCode(commands.Cog):
     async def trigger_auto_redeem_for_new_codes(self, new_codes):
         """Trigger auto-redeem for all guilds with auto-redeem enabled"""
         try:
+            self.logger.info("🔔 === TRIGGER AUTO-REDEEM ===")
+            self.logger.info(f"📥 Received {len(new_codes)} codes to process: {[c[0] for c in new_codes]}")
+            
             # Get all guilds with auto-redeem enabled - try MongoDB first
             enabled_guilds = []
             
+            mongo_attempted = False
             if mongo_enabled() and AutoRedeemSettingsAdapter:
                 try:
+                    mongo_attempted = True
+                    self.logger.info("📊 Checking MongoDB for enabled guilds...")
                     # Get all guilds with auto-redeem enabled from MongoDB
                     all_settings = AutoRedeemSettingsAdapter.get_all_settings()
-                    enabled_guilds = [
-                        (settings['guild_id'],)
-                        for settings in all_settings
-                        if settings.get('enabled', False)
-                    ]
-                    self.logger.info(f"Found {len(enabled_guilds)} guilds with auto-redeem enabled in MongoDB")
+                    if all_settings:
+                        self.logger.info(f"📋 Found {len(all_settings)} total guild settings in MongoDB")
+                        enabled_guilds = [
+                            (settings['guild_id'],)
+                            for settings in all_settings
+                            if settings.get('enabled', False)
+                        ]
+                        self.logger.info(f"✅ MongoDB: {len(enabled_guilds)} guilds with auto-redeem ENABLED")
+                        if enabled_guilds:
+                            self.logger.info(f"📝 Enabled guild IDs: {[g[0] for g in enabled_guilds]}")
+                        else:
+                            self.logger.warning("⚠️ MongoDB: No guilds have auto-redeem enabled!")
+                    else:
+                        self.logger.warning("⚠️ MongoDB: No settings found (empty collection)")
                 except Exception as e:
-                    self.logger.warning(f"Failed to get auto-redeem settings from MongoDB: {e}")
+                    self.logger.error(f"❌ MongoDB get_all_settings failed: {e}")
+            elif mongo_enabled():
+                self.logger.warning("⚠️ MongoDB enabled but AutoRedeemSettingsAdapter unavailable")
+            else:
+                self.logger.info("ℹ️ MongoDB not enabled, checking SQLite...")
             
             # Fallback to SQLite if MongoDB failed or not enabled
-            if not enabled_guilds and (not mongo_enabled() or not AutoRedeemSettingsAdapter):
-                self.cursor.execute("""
-                    SELECT guild_id FROM auto_redeem_settings WHERE enabled = 1
-                """)
-                enabled_guilds = self.cursor.fetchall()
-                self.logger.info(f"Found {len(enabled_guilds)} guilds with auto-redeem enabled in SQLite")
+            if not enabled_guilds and (not mongo_enabled() or not AutoRedeemSettingsAdapter or not mongo_attempted):
+                try:
+                    self.logger.info("📂 Checking SQLite for enabled guilds...")
+                    self.cursor.execute("""
+                        SELECT guild_id FROM auto_redeem_settings WHERE enabled = 1
+                    """)
+                    enabled_guilds = self.cursor.fetchall()
+                    self.logger.info(f"✅ SQLite: {len(enabled_guilds)} guilds with auto-redeem ENABLED")
+                    if enabled_guilds:
+                        self.logger.info(f"📝 Enabled guild IDs: {[g[0] for g in enabled_guilds]}")
+                    else:
+                        self.logger.warning("⚠️ SQLite: No guilds have auto-redeem enabled!")
+                except Exception as e:
+                    self.logger.error(f"❌ SQLite query failed: {e}")
             
             if not enabled_guilds:
-                self.logger.info("No guilds have auto-redeem enabled")
+                self.logger.error("❌ CRITICAL: No guilds have auto-redeem enabled!")
+                self.logger.error("🔍 To enable auto-redeem:")
+                self.logger.error("   1. Go to Auto-Redeem Configuration menu")
+                self.logger.error("   2. Click 'Enable Auto-Redeem' button")
+                self.logger.error("   3. Ensure you have members added to auto-redeem list")
+                self.logger.error("🏁 === TRIGGER AUTO-REDEEM COMPLETE (NO GUILDS) ===")
                 return
             
             self.logger.info(f"Triggering auto-redeem for {len(enabled_guilds)} guilds with {len(new_codes)} new codes")
@@ -1481,36 +1512,53 @@ class ManageGiftCode(commands.Cog):
                     already_processed = result[0] if result and result[0] else 0
                 
                 if already_processed:
-                    self.logger.info(f"Skipping auto-redeem for code {code} - already processed")
+                    self.logger.warning(f"⏭️ Skipping code {code} - already marked as processed")
                     continue
+                
+                self.logger.info(f"🎯 Processing code {code} for {len(enabled_guilds)} guilds...")
                 
                 for (guild_id,) in enabled_guilds:
                     try:
                         # Run auto-redeem in background to avoid blocking
                         asyncio.create_task(self.process_auto_redeem(guild_id, code))
-                        self.logger.info(f"Started auto-redeem for guild {guild_id} with code {code}")
+                        self.logger.info(f"✅ Started auto-redeem task: guild={guild_id}, code={code}")
                     except Exception as e:
-                        self.logger.error(f"Error starting auto-redeem for guild {guild_id}: {e}")
+                        self.logger.error(f"❌ Failed to start auto-redeem for guild {guild_id}: {e}")
+                
+                self.logger.info(f"📊 Triggered auto-redeem for code {code} across {len(enabled_guilds)} guilds")
                 
                 # Mark code as processed after triggering auto-redeem for all guilds
                 try:
                     # Mark in MongoDB if available
+                    mongo_marked = False
                     if mongo_enabled() and GiftCodesAdapter:
                         try:
                             GiftCodesAdapter.mark_code_processed(code)
-                            self.logger.info(f"Marked code {code} as auto-redeem processed in MongoDB")
+                            mongo_marked = True
+                            self.logger.info(f"✅ Marked {code} as processed in MongoDB")
                         except Exception as e:
-                            self.logger.warning(f"Failed to mark code as processed in MongoDB: {e}")
+                            self.logger.error(f"❌ Failed to mark code in MongoDB: {e}")
                     
                     # Also mark in SQLite for consistency
-                    self.cursor.execute(
-                        "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
-                        (code,)
-                    )
-                    self.giftcode_db.commit()
-                    self.logger.info(f"Marked code {code} as auto-redeem processed in SQLite")
+                    sqlite_marked = False
+                    try:
+                        self.cursor.execute(
+                            "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
+                            (code,)
+                        )
+                        self.giftcode_db.commit()
+                        sqlite_marked = True
+                        self.logger.info(f"✅ Marked {code} as processed in SQLite")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to mark code in SQLite: {e}")
+                    
+                    if not mongo_marked and not sqlite_marked:
+                        self.logger.error(f"❌ CRITICAL: Failed to mark {code} as processed in ANY database!")
                 except Exception as e:
-                    self.logger.error(f"Error marking code {code} as processed: {e}")
+                    self.logger.error(f"❌ Error marking code {code} as processed: {e}")
+            
+            self.logger.info(f"✅ Processed {len(new_codes)} codes for auto-redeem")
+            self.logger.info("🏁 === TRIGGER AUTO-REDEEM COMPLETE ===")
         
         except Exception as e:
             self.logger.exception(f"Error triggering auto-redeem: {e}")
