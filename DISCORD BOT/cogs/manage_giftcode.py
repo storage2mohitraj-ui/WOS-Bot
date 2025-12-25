@@ -4057,20 +4057,36 @@ class ManageGiftCode(commands.Cog):
                 # Fetch all gift codes from database
                 all_codes = []
                 
-                # Try MongoDB first
+                # Try MongoDB first - use get_all() method
                 _mongo_enabled = globals().get('mongo_enabled', lambda: False)
                 if _mongo_enabled() and GiftCodesAdapter:
                     try:
-                        mongo_codes = GiftCodesAdapter.get_all_codes()
+                        mongo_codes = GiftCodesAdapter.get_all()
                         if mongo_codes:
-                            all_codes = [
-                                (
-                                    code.get('giftcode', ''),
-                                    code.get('date', ''),
-                                    code.get('auto_redeem_processed', False)
-                                )
-                                for code in mongo_codes
-                            ]
+                            all_codes = []
+                            for code_data in mongo_codes:
+                                try:
+                                    # Handle different formats: tuple, dict, or other
+                                    if isinstance(code_data, tuple):
+                                        code_str = str(code_data[0]) if code_data else ''
+                                        date_str = str(code_data[1]) if len(code_data) > 1 else ''
+                                        processed = code_data[2] if len(code_data) > 2 else False
+                                    elif isinstance(code_data, dict):
+                                        code_str = str(code_data.get('giftcode', ''))
+                                        date_str = str(code_data.get('date', ''))
+                                        processed = code_data.get('auto_redeem_processed', False)
+                                    else:
+                                        # Unknown format, convert to string
+                                        code_str = str(code_data)
+                                        date_str = ''
+                                        processed = False
+                                    
+                                    if code_str:  # Only add non-empty codes
+                                        all_codes.append((code_str, date_str, processed))
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to parse MongoDB code entry: {e}")
+                                    continue
+                            
                             self.logger.info(f"Fetched {len(all_codes)} codes from MongoDB for reset")
                     except Exception as e:
                         self.logger.warning(f"Failed to fetch codes from MongoDB: {e}")
@@ -4249,14 +4265,27 @@ class ManageGiftCode(commands.Cog):
                     try:
                         mongo_codes = GiftCodesAdapter.get_all()
                         if mongo_codes:
-                            all_codes = [
-                                (
-                                    code[0] if isinstance(code, tuple) else code.get('giftcode', ''),
-                                    code[1] if isinstance(code, tuple) and len(code) > 1 else code.get('date', ''),
-                                    False  # Processing status doesn't matter for deletion
-                                )
-                                for code in mongo_codes
-                            ]
+                            all_codes = []
+                            for code_data in mongo_codes:
+                                try:
+                                    # Handle different formats: tuple, dict, or other
+                                    if isinstance(code_data, tuple):
+                                        code_str = str(code_data[0]) if code_data else ''
+                                        date_str = str(code_data[1]) if len(code_data) > 1 else ''
+                                    elif isinstance(code_data, dict):
+                                        code_str = str(code_data.get('giftcode', ''))
+                                        date_str = str(code_data.get('date', ''))
+                                    else:
+                                        # Unknown format, convert to string
+                                        code_str = str(code_data)
+                                        date_str = ''
+                                    
+                                    if code_str:  # Only add non-empty codes
+                                        all_codes.append((code_str, date_str, False))
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to parse MongoDB code entry: {e}")
+                                    continue
+                            
                             self.logger.info(f"Fetched {len(all_codes)} codes from MongoDB for deletion")
                     except Exception as e:
                         self.logger.warning(f"Failed to fetch codes from MongoDB: {e}")
