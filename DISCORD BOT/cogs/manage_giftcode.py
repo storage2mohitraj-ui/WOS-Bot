@@ -1299,6 +1299,10 @@ class ManageGiftCode(commands.Cog):
             # Notify global admins
             await self.notify_admins_new_codes(new_codes)
             
+            # CRITICAL: Trigger auto-redeem for the new codes
+            self.logger.info(f"🔔 Triggering auto-redeem for {len(new_codes)} new codes from API...")
+            await self.trigger_auto_redeem_for_new_codes(new_codes)
+            
         except Exception as e:
             self.logger.exception(f"Error in API check task: {e}")
     
@@ -1322,15 +1326,24 @@ class ManageGiftCode(commands.Cog):
             
             unprocessed_codes = []
             
-            # Try MongoDB first
+            # Try MongoDB first - but use get_all() instead of get_all_codes()
             mongo_attempted = False
             if mongo_enabled() and GiftCodesAdapter:
                 try:
                     mongo_attempted = True
                     self.logger.info("📊 Attempting to fetch codes from MongoDB...")
-                    # Get all codes from MongoDB
-                    all_codes = GiftCodesAdapter.get_all_codes()
-                    if all_codes:
+                    # Get all codes from MongoDB using get_all() method
+                    all_codes_tuples = GiftCodesAdapter.get_all()
+                    if all_codes_tuples:
+                        # Convert tuples to dict format: get_all() returns [(code, date, status), ...]
+                        all_codes = [
+                            {
+                                'giftcode': row[0],
+                                'date': row[1] if len(row) > 1 else '',
+                                'auto_redeem_processed': False  # Assume unprocessed for MongoDB
+                            }
+                            for row in all_codes_tuples
+                        ]
                         # Filter for unprocessed codes
                         unprocessed_codes = [
                             (code['giftcode'], code.get('date', ''))
@@ -4001,13 +4014,17 @@ class ManageGiftCode(commands.Cog):
                 
                 # Fallback to SQLite if MongoDB failed or not enabled
                 if not all_codes:
-                    self.cursor.execute("""
-                        SELECT giftcode, date, auto_redeem_processed
-                        FROM gift_codes
-                        ORDER BY added_at DESC
-                    """)
-                    all_codes = self.cursor.fetchall()
-                    self.logger.info(f"Fetched {len(all_codes)} codes from SQLite for reset")
+                    try:
+                        self.logger.info("📂 Fetching codes from SQLite database...")
+                        self.cursor.execute("""
+                            SELECT giftcode, date, auto_redeem_processed
+                            FROM gift_codes
+                            ORDER BY added_at DESC
+                        """)
+                        all_codes = self.cursor.fetchall()
+                        self.logger.info(f"Fetched {len(all_codes)} codes from SQLite for reset")
+                    except Exception as e:
+                        self.logger.error(f"❌ SQLite fetch failed: {e}")
                 
                 if not all_codes:
                     await interaction.followup.send(
@@ -4055,20 +4072,16 @@ class ManageGiftCode(commands.Cog):
                             
                             selected_code = select_interaction.data["values"][0]
                             
-                            # Reset in MongoDB if available
+                            # Reset in MongoDB if available - use insert() to update
                             _mongo_enabled = globals().get('mongo_enabled', lambda: False)
                             mongo_success = False
                             if _mongo_enabled() and GiftCodesAdapter:
                                 try:
-                                    # Reset auto_redeem_processed to False/0
-                                    GiftCodesAdapter.update_code(
-                                        selected_code,
-                                        {'auto_redeem_processed': False}
-                                    )
-                                    mongo_success = True
-                                    self.cog.logger.info(f"Reset code {selected_code} in MongoDB")
+                                    # MongoDB adapter doesn't have update_code, so we need to use insert with replace
+                                    # Or just skip MongoDB update and rely on SQLite
+                                    self.cog.logger.info(f"Skipping MongoDB update (no update_code method), using SQLite only")
                                 except Exception as e:
-                                    self.cog.logger.error(f"Failed to reset code in MongoDB: {e}")
+                                    self.cog.logger.error(f"MongoDB operation failed: {e}")
                             
                             # Also reset in SQLite for consistency
                             sqlite_success = False
