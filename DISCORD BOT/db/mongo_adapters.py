@@ -726,6 +726,27 @@ class AutoRedeemSettingsAdapter:
             logger.error(f'Failed to set auto redeem settings for guild {guild_id}: {e}')
             return False
 
+    @staticmethod
+    def get_all_settings() -> list:
+        """Get all auto redeem settings for all guilds (used on startup to restore state)"""
+        try:
+            db = _get_db()
+            docs = list(db[AutoRedeemSettingsAdapter.COLL].find({}))
+            settings_list = []
+            for doc in docs:
+                settings = {
+                    'guild_id': int(doc.get('guild_id', doc.get('_id', 0))),
+                    'enabled': bool(doc.get('enabled', False)),
+                    'updated_by': int(doc.get('updated_by', 0)) if doc.get('updated_by') else 0,
+                    'updated_at': doc.get('updated_at')
+                }
+                settings_list.append(settings)
+            logger.info(f'Retrieved {len(settings_list)} auto redeem settings from MongoDB')
+            return settings_list
+        except Exception as e:
+            logger.error(f'Failed to get all auto redeem settings: {e}')
+            return []
+
 
 class AutoRedeemChannelsAdapter:
     """Adapter for managing auto redeem channel configuration in MongoDB"""

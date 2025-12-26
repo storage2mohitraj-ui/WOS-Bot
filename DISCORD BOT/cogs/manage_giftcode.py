@@ -1312,8 +1312,82 @@ class ManageGiftCode(commands.Cog):
         await self.bot.wait_until_ready()
         self.logger.info("Gift code API check task started")
         
+        # Sync auto-redeem settings from SQLite to MongoDB (for migration on first startup)
+        await self.sync_auto_redeem_settings_to_mongo()
+        
         # Process any existing unprocessed codes on startup
         await self.process_existing_codes_on_startup()
+    
+    async def sync_auto_redeem_settings_to_mongo(self):
+        """
+        Sync auto-redeem settings from SQLite to MongoDB on startup.
+        This ensures persistence even after SQLite resets on Render.
+        """
+        try:
+            if not mongo_enabled() or not AutoRedeemSettingsAdapter:
+                self.logger.info("⏭️ MongoDB not enabled, skipping auto-redeem settings sync")
+                return
+            
+            self.logger.info("🔄 === SYNCING AUTO-REDEEM SETTINGS TO MONGODB ===")
+            
+            # Read ALL enabled guilds from SQLite
+            try:
+                self.cursor.execute("""
+                    SELECT guild_id, enabled, updated_by, updated_at
+                    FROM auto_redeem_settings
+                    WHERE enabled = 1
+                """)
+                sqlite_settings = self.cursor.fetchall()
+                self.logger.info(f"📂 SQLite: Found {len(sqlite_settings)} enabled guilds")
+            except Exception as e:
+                self.logger.error(f"❌ Error reading SQLite settings: {e}")
+                sqlite_settings = []
+            
+            if not sqlite_settings:
+                self.logger.info("ℹ️ No enabled guilds in SQLite to sync")
+                # Also check MongoDB for existing settings
+                try:
+                    mongo_settings = AutoRedeemSettingsAdapter.get_all_settings()
+                    if mongo_settings:
+                        enabled_count = sum(1 for s in mongo_settings if s.get('enabled', False))
+                        self.logger.info(f"✅ MongoDB already has {enabled_count} enabled guilds (out of {len(mongo_settings)} total)")
+                except Exception as e:
+                    self.logger.error(f"❌ Error checking MongoDB settings: {e}")
+                return
+            
+            # Sync each enabled setting to MongoDB
+            synced_count = 0
+            for row in sqlite_settings:
+                guild_id = row[0]
+                enabled = bool(row[1])
+                updated_by = row[2] if len(row) > 2 else 0
+                
+                # Check if already exists in MongoDB
+                existing = AutoRedeemSettingsAdapter.get_settings(guild_id)
+                
+                if existing and existing.get('enabled', False):
+                    self.logger.debug(f"ℹ️ Guild {guild_id} already enabled in MongoDB, skipping")
+                    continue
+                
+                # Sync to MongoDB
+                try:
+                    success = AutoRedeemSettingsAdapter.set_enabled(
+                        guild_id,
+                        enabled,
+                        updated_by or 0
+                    )
+                    if success:
+                        synced_count += 1
+                        self.logger.info(f"✅ Synced guild {guild_id} auto-redeem settings to MongoDB")
+                    else:
+                        self.logger.warning(f"⚠️ Failed to sync guild {guild_id} to MongoDB")
+                except Exception as e:
+                    self.logger.error(f"❌ Error syncing guild {guild_id}: {e}")
+            
+            self.logger.info(f"🎉 Synced {synced_count} guild(s) to MongoDB")
+            self.logger.info("🏁 === AUTO-REDEEM SETTINGS SYNC COMPLETE ===")
+        except Exception as e:
+            self.logger.exception(f"❌ Error syncing auto-redeem settings: {e}")
     
     async def process_existing_codes_on_startup(self):
         """Check for existing codes that haven't been auto-redeemed and trigger auto-redeem for them"""
