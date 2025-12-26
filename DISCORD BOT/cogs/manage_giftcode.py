@@ -788,30 +788,52 @@ class ManageGiftCode(commands.Cog):
                 self.logger.info(f"No auto-redeem members for guild {guild_id}")
                 return
             
+            
             # Filter out members who have already redeemed this code (checked via MongoDB)
+            # Use batch checking to avoid blocking the event loop with many sequential MongoDB calls
             members_to_process = []
             skipped_count = 0
             
-            for member in members_data:
-                fid = member['fid']
-                # Check if this member already redeemed this code
-                already_redeemed = False
-                
-                if mongo_enabled() and AutoRedeemedCodesAdapter:
-                    try:
-                        already_redeemed = AutoRedeemedCodesAdapter.is_code_redeemed_for_member(
-                            guild_id=guild_id,
-                            code=giftcode,
-                            fid=str(fid)
-                        )
-                        if already_redeemed:
+            if mongo_enabled() and AutoRedeemedCodesAdapter:
+                try:
+                    # Batch check all FIDs at once to prevent event loop blocking
+                    self.logger.info(f"🔍 Batch checking {len(members_data)} members for code {giftcode}...")
+                    
+                    # Extract all FIDs
+                    all_fids = [member['fid'] for member in members_data]
+                    
+                    # Run batch check in thread pool to avoid blocking event loop
+                    redeemed_status = await asyncio.to_thread(
+                        AutoRedeemedCodesAdapter.batch_check_members,
+                        guild_id,
+                        giftcode,
+                        all_fids
+                    )
+                    
+                    # Filter based on batch check results
+                    for member in members_data:
+                        fid = str(member['fid'])
+                        if redeemed_status.get(fid, False):
                             self.logger.info(f"⏭️ Skipping {member['nickname']} (FID: {fid}) - already redeemed code {giftcode}")
                             skipped_count += 1
-                    except Exception as e:
-                        self.logger.warning(f"Error checking redemption status for FID {fid}: {e}")
-                
-                if not already_redeemed:
-                    members_to_process.append((fid, member['nickname'], member.get('furnace_lv', 0)))
+                        else:
+                            members_to_process.append((fid, member['nickname'], member.get('furnace_lv', 0)))
+                    
+                    self.logger.info(f"✅ Batch check complete: {len(members_to_process)} to process, {skipped_count} already redeemed")
+                except Exception as e:
+                    self.logger.warning(f"Error during batch check, falling back to processing all members: {e}")
+                    # On error, process all members (better than skipping everyone)
+                    members_to_process = [
+                        (member['fid'], member['nickname'], member.get('furnace_lv', 0))
+                        for member in members_data
+                    ]
+            else:
+                # MongoDB not enabled, process all members
+                self.logger.info("MongoDB not enabled, processing all members")
+                members_to_process = [
+                    (member['fid'], member['nickname'], member.get('furnace_lv', 0))
+                    for member in members_data
+                ]
             
             # Convert to tuple format for compatibility with existing code
             members = members_to_process

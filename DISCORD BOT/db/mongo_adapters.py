@@ -675,8 +675,47 @@ class AutoRedeemedCodesAdapter:
                 'codes': results
             }
         except Exception as e:
-            logger.error(f'Failed to get stats for guild {guild_id}: {e}')
             return {'total_codes': 0, 'total_redemptions': 0, 'codes': []}
+
+    @staticmethod
+    def batch_check_members(guild_id: int, code: str, fids: list) -> dict:
+        """
+        Batch check which FIDs have already redeemed a specific code in a guild.
+        This is much more efficient than checking each FID individually.
+        
+        Args:
+            guild_id: Discord guild ID
+            code: Gift code string
+            fids: List of FID strings to check
+        
+        Returns:
+            dict: Dictionary mapping fid -> bool (True if already redeemed, False if not)
+        """
+        try:
+            db = _get_db()
+            normalized_code = str(code).strip().upper()
+            
+            # Build list of composite IDs to check
+            ids_to_check = [f"{guild_id}:{normalized_code}:{fid}" for fid in fids]
+            
+            # Find all existing redemption records in a single query
+            docs = db[AutoRedeemedCodesAdapter.COLL].find({
+                '_id': {'$in': ids_to_check}
+            })
+            
+            # Create set of redeemed FIDs
+            redeemed_fids = {doc.get('fid') for doc in docs if doc.get('fid')}
+            
+            # Return mapping of fid -> bool
+            result = {str(fid): (str(fid) in redeemed_fids) for fid in fids}
+            
+            logger.debug(f'Batch checked {len(fids)} members for code {code} in guild {guild_id}: {len(redeemed_fids)} already redeemed')
+            return result
+        except Exception as e:
+            logger.error(f'Failed to batch check members for code {code} in guild {guild_id}: {e}')
+            # Return all False on error (assume none redeemed to avoid skipping)
+            return {str(fid): False for fid in fids}
+
 
 
 class SentGiftCodesAdapter:
