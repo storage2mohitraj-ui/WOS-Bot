@@ -483,6 +483,201 @@ class GiftCodesAdapter:
             logger.error(f'Failed to clear all gift codes: {e}')
             return False
 
+    @staticmethod
+    def get_code(code: str) -> Optional[Dict[str, Any]]:
+        """Get a specific gift code's details including auto_redeem_processed status"""
+        try:
+            db = _get_db()
+            doc = db[GiftCodesAdapter.COLL].find_one({'_id': code})
+            if not doc:
+                return None
+            return {
+                'code': doc.get('_id'),
+                'date': doc.get('date'),
+                'validation_status': doc.get('validation_status'),
+                'auto_redeem_processed': doc.get('auto_redeem_processed', False),
+                'created_at': doc.get('created_at'),
+                'updated_at': doc.get('updated_at')
+            }
+        except Exception as e:
+            logger.error(f'Failed to get gift code {code}: {e}')
+            return None
+
+    @staticmethod
+    def mark_code_processed(code: str) -> bool:
+        """Mark a gift code as processed for auto-redeem (globally)"""
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            result = db[GiftCodesAdapter.COLL].update_one(
+                {'_id': code},
+                {
+                    '$set': {
+                        'auto_redeem_processed': True,
+                        'auto_redeem_processed_at': now,
+                        'updated_at': now
+                    }
+                }
+            )
+            if result.modified_count > 0:
+                logger.info(f'✅ Marked gift code {code} as processed in MongoDB')
+                return True
+            else:
+                logger.warning(f'⚠️ Gift code {code} not found in MongoDB to mark as processed')
+                return False
+        except Exception as e:
+            logger.error(f'Failed to mark code {code} as processed: {e}')
+            return False
+
+    @staticmethod
+    def reset_code_processed(code: str) -> bool:
+        """Reset a gift code's auto-redeem processed status (for re-triggering)"""
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            result = db[GiftCodesAdapter.COLL].update_one(
+                {'_id': code},
+                {
+                    '$set': {
+                        'auto_redeem_processed': False,
+                        'updated_at': now
+                    },
+                    '$unset': {
+                        'auto_redeem_processed_at': ''
+                    }
+                }
+            )
+            if result.modified_count > 0:
+                logger.info(f'✅ Reset gift code {code} processed status in MongoDB')
+                return True
+            return False
+        except Exception as e:
+            logger.error(f'Failed to reset code {code} processed status: {e}')
+            return False
+
+    @staticmethod
+    def get_all_with_status():
+        """Get all gift codes with their auto_redeem_processed status"""
+        try:
+            db = _get_db()
+            docs = db[GiftCodesAdapter.COLL].find({})
+            return [
+                {
+                    'giftcode': d.get('_id'),
+                    'date': d.get('date'),
+                    'validation_status': d.get('validation_status'),
+                    'auto_redeem_processed': d.get('auto_redeem_processed', False),
+                    'created_at': d.get('created_at')
+                }
+                for d in docs
+            ]
+        except Exception as e:
+            logger.error(f'Failed to get all gift codes with status from Mongo: {e}')
+            return []
+
+
+class AutoRedeemedCodesAdapter:
+    """Adapter for tracking which codes have been auto-redeemed for each guild/FID combination"""
+    COLL = 'auto_redeemed_codes'
+
+    @staticmethod
+    def is_code_redeemed_for_member(guild_id: int, code: str, fid: str) -> bool:
+        """Check if a specific code has been auto-redeemed for a specific member in a guild"""
+        try:
+            db = _get_db()
+            normalized_code = str(code).strip().upper()
+            # Use composite key: guild_id:code:fid
+            doc = db[AutoRedeemedCodesAdapter.COLL].find_one({
+                '_id': f"{guild_id}:{normalized_code}:{fid}"
+            })
+            return doc is not None
+        except Exception as e:
+            logger.error(f'Failed to check if code {code} was redeemed for FID {fid} in guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def mark_code_redeemed_for_member(guild_id: int, code: str, fid: str, status: str = 'success') -> bool:
+        """Mark a code as redeemed for a specific member in a guild"""
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            normalized_code = str(code).strip().upper()
+            
+            db[AutoRedeemedCodesAdapter.COLL].update_one(
+                {'_id': f"{guild_id}:{normalized_code}:{fid}"},
+                {
+                    '$set': {
+                        'guild_id': int(guild_id),
+                        'code': normalized_code,
+                        'fid': str(fid),
+                        'status': status,
+                        'redeemed_at': now,
+                        'updated_at': now
+                    },
+                    '$setOnInsert': {'created_at': now}
+                },
+                upsert=True
+            )
+            logger.debug(f'Marked code {code} as redeemed for FID {fid} in guild {guild_id} with status {status}')
+            return True
+        except Exception as e:
+            logger.error(f'Failed to mark code {code} as redeemed for FID {fid} in guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def get_redeemed_members_for_code(guild_id: int, code: str) -> list:
+        """Get all FIDs that have redeemed a specific code in a guild"""
+        try:
+            db = _get_db()
+            normalized_code = str(code).strip().upper()
+            docs = db[AutoRedeemedCodesAdapter.COLL].find({
+                'guild_id': int(guild_id),
+                'code': normalized_code
+            })
+            return [doc.get('fid') for doc in docs if doc.get('fid')]
+        except Exception as e:
+            logger.error(f'Failed to get redeemed members for code {code} in guild {guild_id}: {e}')
+            return []
+
+    @staticmethod
+    def is_code_fully_processed_for_guild(guild_id: int, code: str) -> bool:
+        """Check if a code has been processed for ANY member in a guild (used for startup check)"""
+        try:
+            db = _get_db()
+            normalized_code = str(code).strip().upper()
+            # Check if at least one member has this code redeemed
+            doc = db[AutoRedeemedCodesAdapter.COLL].find_one({
+                'guild_id': int(guild_id),
+                'code': normalized_code
+            })
+            return doc is not None
+        except Exception as e:
+            logger.error(f'Failed to check if code {code} is processed for guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def get_stats_for_guild(guild_id: int) -> dict:
+        """Get statistics about auto-redeemed codes for a guild"""
+        try:
+            db = _get_db()
+            pipeline = [
+                {'$match': {'guild_id': int(guild_id)}},
+                {'$group': {
+                    '_id': '$code',
+                    'count': {'$sum': 1},
+                    'last_redeemed': {'$max': '$redeemed_at'}
+                }}
+            ]
+            results = list(db[AutoRedeemedCodesAdapter.COLL].aggregate(pipeline))
+            return {
+                'total_codes': len(results),
+                'total_redemptions': sum(r['count'] for r in results),
+                'codes': results
+            }
+        except Exception as e:
+            logger.error(f'Failed to get stats for guild {guild_id}: {e}')
+            return {'total_codes': 0, 'total_redemptions': 0, 'codes': []}
+
 
 class SentGiftCodesAdapter:
     """Adapter for tracking sent gift codes per guild to prevent duplicates"""

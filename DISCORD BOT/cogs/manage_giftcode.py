@@ -12,13 +12,14 @@ from datetime import datetime
 import logging
 
 try:
-    from db.mongo_adapters import mongo_enabled, GiftCodesAdapter, AutoRedeemSettingsAdapter, AutoRedeemChannelsAdapter, GiftCodeRedemptionAdapter, AutoRedeemMembersAdapter
+    from db.mongo_adapters import mongo_enabled, GiftCodesAdapter, AutoRedeemSettingsAdapter, AutoRedeemChannelsAdapter, GiftCodeRedemptionAdapter, AutoRedeemMembersAdapter, AutoRedeemedCodesAdapter
 except Exception:
     mongo_enabled = lambda: False
     GiftCodesAdapter = None
     AutoRedeemSettingsAdapter = None
     AutoRedeemChannelsAdapter = None
     AutoRedeemMembersAdapter = None
+    AutoRedeemedCodesAdapter = None
     
     # Fallback stub for GiftCodeRedemptionAdapter
     class GiftCodeRedemptionAdapter:
@@ -660,9 +661,10 @@ class ManageGiftCode(commands.Cog):
             if not redemption_successful and final_status not in ["ALREADY_RECEIVED"]:
                 self.logger.error(f"❌ Redemption failed for {nickname} after {redemption_attempt} attempts, final status: {final_status}")
             
-            # Track redemption to MongoDB for history
+            # Track redemption to MongoDB for history and to prevent duplicates on restart
             if final_status:
                 try:
+                    # Track in general redemption history
                     if mongo_enabled() and GiftCodeRedemptionAdapter:
                         # Determine tracking status
                         if redemption_successful:
@@ -679,6 +681,19 @@ class ManageGiftCode(commands.Cog):
                             status=tracking_status
                         )
                         self.logger.debug(f"Tracked redemption: guild={guild_id}, code={giftcode}, fid={fid}, status={tracking_status}")
+                    
+                    # CRITICAL: Track in AutoRedeemedCodesAdapter to prevent duplicate redemptions on restart
+                    # This tracks which specific members have already redeemed a code
+                    if mongo_enabled() and AutoRedeemedCodesAdapter:
+                        if redemption_successful or final_status == "ALREADY_RECEIVED":
+                            # Mark this specific member as having redeemed this code
+                            AutoRedeemedCodesAdapter.mark_code_redeemed_for_member(
+                                guild_id=guild_id,
+                                code=giftcode,
+                                fid=str(fid),
+                                status="success" if redemption_successful else "already_redeemed"
+                            )
+                            self.logger.debug(f"✅ Marked {nickname} (FID: {fid}) as redeemed for code {giftcode} in guild {guild_id}")
                 except Exception as e:
                     self.logger.error(f"Error tracking redemption: {e}")
             
@@ -769,15 +784,61 @@ class ManageGiftCode(commands.Cog):
             # Get all auto-redeem members using MongoDB-first helper
             members_data = self.AutoRedeemDB.get_members(self, guild_id)
             
-            # Convert to tuple format for compatibility with existing code
-            members = [
-                (m['fid'], m['nickname'], m.get('furnace_lv', 0))
-                for m in members_data
-            ]
-            
-            if not members:
+            if not members_data:
                 self.logger.info(f"No auto-redeem members for guild {guild_id}")
                 return
+            
+            # Filter out members who have already redeemed this code (checked via MongoDB)
+            members_to_process = []
+            skipped_count = 0
+            
+            for member in members_data:
+                fid = member['fid']
+                # Check if this member already redeemed this code
+                already_redeemed = False
+                
+                if mongo_enabled() and AutoRedeemedCodesAdapter:
+                    try:
+                        already_redeemed = AutoRedeemedCodesAdapter.is_code_redeemed_for_member(
+                            guild_id=guild_id,
+                            code=giftcode,
+                            fid=str(fid)
+                        )
+                        if already_redeemed:
+                            self.logger.info(f"⏭️ Skipping {member['nickname']} (FID: {fid}) - already redeemed code {giftcode}")
+                            skipped_count += 1
+                    except Exception as e:
+                        self.logger.warning(f"Error checking redemption status for FID {fid}: {e}")
+                
+                if not already_redeemed:
+                    members_to_process.append((fid, member['nickname'], member.get('furnace_lv', 0)))
+            
+            # Convert to tuple format for compatibility with existing code
+            members = members_to_process
+            
+            if not members:
+                self.logger.info(f"✅ All {len(members_data)} members have already redeemed code {giftcode} for guild {guild_id}")
+                # Send a message to the channel
+                try:
+                    skip_embed = discord.Embed(
+                        title="🎁 Auto-Redeem Skipped",
+                        description=(
+                            f"```ansi\n"
+                            f"\u001b[2;36m━━━━━━━━━━━━━━━━━━━━━━\u001b[0m\n"
+                            f"\u001b[1;37mGift Code: {giftcode}\u001b[0m\n"
+                            f"\u001b[2;36m━━━━━━━━━━━━━━━━━━━━━━\u001b[0m\n"
+                            f"```\n"
+                            f"✅ **All {len(members_data)} members have already redeemed this code!**\n"
+                            f"⏰ **Checked:** <t:{int(datetime.now().timestamp())}:R>\n"
+                        ),
+                        color=0x57F287
+                    )
+                    await channel.send(embed=skip_embed)
+                except Exception:
+                    pass
+                return
+            
+            self.logger.info(f"📊 Processing {len(members)} members (skipped {skipped_count} already redeemed)")
             
             # Send initial animation message
             initial_embed = discord.Embed(
@@ -789,6 +850,7 @@ class ManageGiftCode(commands.Cog):
                     f"\u001b[2;36m━━━━━━━━━━━━━━━━━━━━━━\u001b[0m\n"
                     f"```\n"
                     f"👥 **Members:** {len(members)}\n"
+                    f"⏭️ **Skipped:** {skipped_count} (already redeemed)\n"
                     f"⏳ **Status:** Processing...\n"
                     f"🚀 **Mode:** Concurrent ({self.concurrent_redemptions} at a time)\n"
                 ),
@@ -1400,24 +1462,15 @@ class ManageGiftCode(commands.Cog):
             
             unprocessed_codes = []
             
-            # Try MongoDB first - but use get_all() instead of get_all_codes()
+            # Try MongoDB first - use the new get_all_with_status() method
             mongo_attempted = False
             if mongo_enabled() and GiftCodesAdapter:
                 try:
                     mongo_attempted = True
                     self.logger.info("📊 Attempting to fetch codes from MongoDB...")
-                    # Get all codes from MongoDB using get_all() method
-                    all_codes_tuples = GiftCodesAdapter.get_all()
-                    if all_codes_tuples:
-                        # Convert tuples to dict format: get_all() returns [(code, date, status), ...]
-                        all_codes = [
-                            {
-                                'giftcode': row[0],
-                                'date': row[1] if len(row) > 1 else '',
-                                'auto_redeem_processed': False  # Assume unprocessed for MongoDB
-                            }
-                            for row in all_codes_tuples
-                        ]
+                    # Get all codes from MongoDB with their auto_redeem_processed status
+                    all_codes = GiftCodesAdapter.get_all_with_status()
+                    if all_codes:
                         # Filter for unprocessed codes
                         unprocessed_codes = [
                             (code['giftcode'], code.get('date', ''))
