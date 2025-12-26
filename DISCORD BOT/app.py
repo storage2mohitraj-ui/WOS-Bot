@@ -3303,42 +3303,27 @@ async def mostactive(interaction: discord.Interaction):
 async def help_command(interaction: discord.Interaction):
     await animator.show_loading(interaction)
     try:
-        # Main overview embed with technical theme
+        # Main overview embed with clean, professional design
         embed = discord.Embed(
-            title="⚡ WHITEOUT SURVIVAL BOT // COMMAND CENTER",
+            title="⚡ Whiteout Survival Bot",
             description=(
-                "```ansi\n"
-                "\u001b[1;36m╔════════════════════════════════════════╗\n"
-                "\u001b[1;36m║     SYSTEM COMMAND INTERFACE          ║\n"
-                "\u001b[1;36m╚════════════════════════════════════════╝\u001b[0m\n"
-                "```\n"
-                "**Welcome to Whiteout Survival Bot Command Center**\n"
-                "Access all bot functions through categorized command modules.\n\n"
-                "**📋 AVAILABLE MODULES:**\n\n"
-                "🎮 **Fun & Games** — 4 commands\n"
-                "Interactive entertainment and AI generation\n\n"
+                "Access all bot functions through categorized command modules.\n"
+                "Use the dropdown below to explore each category.\n\n"
+                "**📋 Available Modules**\n\n"
+                "🎮 **Fun & Games** — 3 commands\n"
                 "🎁 **Gift Codes & Rewards** — 3 commands\n"
-                "Whiteout Survival gift code management\n\n"
                 "🎵 **Music Player** — 15 commands\n"
-                "Full-featured music playback and playlist management\n\n"
                 "⏰ **Reminders & Time** — 2 commands\n"
-                "Scheduled notifications and time management\n\n"
                 "👥 **Community & Stats** — 4 commands\n"
-                "Server analytics and member tracking\n\n"
                 "🛡️ **Alliance Management** — 4 commands\n"
-                "Alliance monitoring and operations\n\n"
+                "🌐 **Auto-Translate** — 5 commands\n"
                 "⚙️ **Server Configuration** — 4 commands\n"
-                "Server settings and customization\n\n"
-                "🔧 **Utility & Tools** — 3 commands\n"
-                "Additional utilities and features\n\n"
-                "```fix\n"
-                "💡 TIP: Use the dropdown menu below to explore each category\n"
-                "```"
+                "🔧 **Utility & Tools** — 2 commands"
             ),
-            color=0x00d9ff,  # Vibrant cyan for technical theme
+            color=0x00d9ff
         )
         embed.set_thumbnail(url="https://i.postimg.cc/Fzq03CJf/a463d7c7-7fc7-47fc-b24d-1324383ee2ff-removebg-preview.png")
-        embed.set_footer(text="⚡ Whiteout Survival Bot // Select a category to view detailed commands")
+        embed.set_footer(text="Select a category to view detailed commands")
 
     except Exception as e:
         logger.error(f"Failed to build help embed: {e}")
