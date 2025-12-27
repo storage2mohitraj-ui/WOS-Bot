@@ -248,6 +248,15 @@ class RemoteAccess(commands.Cog):
                 row=2
             ))
             
+            # Stop Alliance Monitor button
+            view.add_item(discord.ui.Button(
+                label="Stop Monitor",
+                emoji="🛑",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"remote_stop_alliance_monitor_{guild.id}",
+                row=2
+            ))
+            
             # Back button
             view.add_item(discord.ui.Button(
                 label="◀ Back to Server List",
@@ -276,6 +285,8 @@ class RemoteAccess(commands.Cog):
                         item.callback = lambda i, g=guild: self.play_music(i, g)
                     elif item.custom_id.startswith("remote_alliance_monitor_"):
                         item.callback = lambda i, g=guild: self.start_alliance_monitor(i, g)
+                    elif item.custom_id.startswith("remote_stop_alliance_monitor_"):
+                        item.callback = lambda i, g=guild: self.stop_alliance_monitor(i, g)
 
             await interaction.response.edit_message(embed=embed, view=view)
             
@@ -1713,6 +1724,268 @@ class RemoteAccess(commands.Cog):
             traceback.print_exc()
             await interaction.response.send_message(
                 "❌ An error occurred while setting up alliance monitoring.",
+                ephemeral=True
+            )
+
+    async def stop_alliance_monitor(self, interaction: discord.Interaction, guild: discord.Guild):
+        """Stop alliance monitoring for the selected server"""
+        try:
+            # Get the alliance cog
+            alliance_cog = self.bot.get_cog('Alliance')
+            
+            if not alliance_cog:
+                await interaction.response.send_message(
+                    "❌ Alliance system is not loaded.",
+                    ephemeral=True
+                )
+                return
+            
+            # Import database utilities
+            try:
+                from db_utils import get_db_connection
+                from db.mongo_adapters import mongo_enabled, AllianceMonitoringAdapter
+            except:
+                await interaction.response.send_message(
+                    "❌ Database utilities not available.",
+                    ephemeral=True
+                )
+                return
+            
+            # Get active monitors for this guild
+            active_monitors = []
+            try:
+                with get_db_connection('settings.sqlite') as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT alliance_id, channel_id, enabled
+                        FROM alliance_monitoring
+                        WHERE guild_id = ? AND enabled = 1
+                    """, (guild.id,))
+                    active_monitors = cursor.fetchall()
+            except Exception as db_error:
+                print(f"Error fetching active monitors: {db_error}")
+            
+            if not active_monitors:
+                await interaction.response.send_message(
+                    "❌ No active alliance monitors found for this server.\n\nUse the **Alliance Monitor** button to start monitoring an alliance.",
+                    ephemeral=True
+                )
+                return
+            
+            # Get alliance names for the monitors
+            monitor_options = []
+            for alliance_id, channel_id, enabled in active_monitors:
+                alliance_name = "Unknown Alliance"
+                channel_name = "Unknown Channel"
+                
+                # Get alliance name
+                try:
+                    with get_db_connection('alliance.sqlite') as alliance_db:
+                        cursor = alliance_db.cursor()
+                        cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            alliance_name = result[0]
+                except:
+                    pass
+                
+                # Get channel name
+                try:
+                    channel = guild.get_channel(channel_id)
+                    if channel:
+                        channel_name = channel.name
+                except:
+                    pass
+                
+                monitor_options.append(
+                    discord.SelectOption(
+                        label=f"{alliance_name[:50]}",
+                        value=f"{alliance_id}_{channel_id}",
+                        description=f"Channel: #{channel_name[:40]} • ID: {alliance_id}",
+                        emoji="🛡️"
+                    )
+                )
+            
+            # Create dropdown for monitor selection
+            if not monitor_options:
+                await interaction.response.send_message(
+                    "❌ No valid monitors found to stop.",
+                    ephemeral=True
+                )
+                return
+            
+            monitor_select = discord.ui.Select(
+                placeholder="Select a monitor to stop...",
+                options=monitor_options[:25],  # Discord limit
+                custom_id="select_monitor_to_stop"
+            )
+            
+            async def monitor_selected(select_interaction: discord.Interaction):
+                selected_value = select_interaction.data["values"][0]
+                alliance_id, channel_id = selected_value.split("_")
+                alliance_id = int(alliance_id)
+                channel_id = int(channel_id)
+                
+                # Get details for confirmation
+                alliance_name = "Unknown Alliance"
+                try:
+                    with get_db_connection('alliance.sqlite') as alliance_db:
+                        cursor = alliance_db.cursor()
+                        cursor.execute("SELECT name FROM alliance_list WHERE alliance_id = ?", (alliance_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            alliance_name = result[0]
+                except:
+                    pass
+                
+                channel = guild.get_channel(channel_id)
+                channel_mention = channel.mention if channel else f"<#{channel_id}>"
+                
+                # Create confirmation view
+                confirm_view = discord.ui.View(timeout=60)
+                
+                async def confirm_stop(button_int: discord.Interaction):
+                    try:
+                        await button_int.response.defer(ephemeral=True)
+                        
+                        # Stop monitoring by setting enabled = 0
+                        with get_db_connection('settings.sqlite') as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                UPDATE alliance_monitoring 
+                                SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+                                WHERE guild_id = ? AND alliance_id = ? AND channel_id = ?
+                            """, (guild.id, alliance_id, channel_id))
+                            conn.commit()
+                        
+                        # Update MongoDB if enabled
+                        if mongo_enabled():
+                            try:
+                                AllianceMonitoringAdapter.upsert_monitor(guild.id, alliance_id, channel_id, enabled=0)
+                            except:
+                                pass
+                        
+                        # Create success embed
+                        success_embed = discord.Embed(
+                            title="✅ Alliance Monitoring Stopped",
+                            description=(
+                                f"**Alliance:** {alliance_name}\n"
+                                f"**Alliance ID:** `{alliance_id}`\n"
+                                f"**Channel:** {channel_mention}\n"
+                                f"**Server:** {guild.name}\n\n"
+                                f"**Status:** ❌ Monitoring Disabled\n\n"
+                                f"You can restart monitoring at any time using the **Alliance Monitor** button."
+                            ),
+                            color=0xED4245  # Red color
+                        )
+                        
+                        await button_int.followup.send(embed=success_embed, ephemeral=True)
+                        
+                        # Send notification to the channel
+                        if channel:
+                            try:
+                                channel_embed = discord.Embed(
+                                    title="🛑 Alliance Monitoring Stopped",
+                                    description=(
+                                        f"Monitoring for **{alliance_name}** (ID: `{alliance_id}`) has been stopped.\n\n"
+                                        f"**Stopped by:** {button_int.user.mention}\n\n"
+                                        f"To restart monitoring, use the `/settings` command or Remote Access."
+                                    ),
+                                    color=0xED4245
+                                )
+                                await channel.send(embed=channel_embed)
+                            except:
+                                pass  # Not critical if this fails
+                        
+                        print(f"Remote alliance monitoring stopped: Alliance {alliance_id} in channel {channel_id} for guild {guild.id}")
+                        
+                    except Exception as stop_error:
+                        print(f"Error stopping monitor: {stop_error}")
+                        import traceback
+                        traceback.print_exc()
+                        await button_int.followup.send(
+                            f"❌ Error stopping monitor: {str(stop_error)}",
+                            ephemeral=True
+                        )
+                
+                async def cancel_stop(button_int: discord.Interaction):
+                    cancel_embed = discord.Embed(
+                        title="❌ Action Cancelled",
+                        description="Alliance monitoring has not been stopped.",
+                        color=0x95A5A6
+                    )
+                    await button_int.response.edit_message(embed=cancel_embed, view=None)
+                
+                # Add buttons to confirmation view
+                confirm_button = discord.ui.Button(
+                    label="Stop Monitoring",
+                    emoji="🛑",
+                    style=discord.ButtonStyle.danger
+                )
+                confirm_button.callback = confirm_stop
+                
+                cancel_button = discord.ui.Button(
+                    label="Cancel",
+                    emoji="❌",
+                    style=discord.ButtonStyle.secondary
+                )
+                cancel_button.callback = cancel_stop
+                
+                confirm_view.add_item(confirm_button)
+                confirm_view.add_item(cancel_button)
+                
+                # Create confirmation embed
+                confirm_embed = discord.Embed(
+                    title="⚠️ Confirm Stop Monitoring",
+                    description=(
+                        f"Are you sure you want to stop monitoring this alliance?\n\n"
+                        f"**Alliance:** {alliance_name}\n"
+                        f"**Alliance ID:** `{alliance_id}`\n"
+                        f"**Channel:** {channel_mention}\n"
+                        f"**Server:** {guild.name}\n\n"
+                        f"**Note:** You can restart monitoring anytime."
+                    ),
+                    color=0xF39C12  # Orange warning color
+                )
+                
+                await select_interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
+            
+            monitor_select.callback = monitor_selected
+            
+            view = discord.ui.View(timeout=300)
+            view.add_item(monitor_select)
+            
+            # Back button
+            back_button = discord.ui.Button(
+                label="◀ Back",
+                emoji="🏰",
+                style=discord.ButtonStyle.secondary
+            )
+            back_button.callback = lambda i: self.show_server_management(i, guild)
+            view.add_item(back_button)
+            
+            embed = discord.Embed(
+                title=f"🛑 Stop Alliance Monitor for {guild.name}",
+                description=(
+                    f"**Active Monitors:** {len(active_monitors)}\n\n"
+                    "Select an alliance monitor to stop from the dropdown below.\n\n"
+                    "**What happens when you stop:**\n"
+                    "• Monitoring will be disabled\n"
+                    "• No more change notifications will be sent\n"
+                    "• You can restart monitoring anytime\n\n"
+                    "Select a monitor to stop it."
+                ),
+                color=0xED4245
+            )
+            
+            await interaction.response.edit_message(embed=embed, view=view)
+            
+        except Exception as e:
+            print(f"Stop alliance monitor error: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.response.send_message(
+                "❌ An error occurred while loading the stop monitor menu.",
                 ephemeral=True
             )
 
