@@ -12,7 +12,7 @@ from datetime import datetime
 import logging
 
 try:
-    from db.mongo_adapters import mongo_enabled, GiftCodesAdapter, AutoRedeemSettingsAdapter, AutoRedeemChannelsAdapter, GiftCodeRedemptionAdapter, AutoRedeemMembersAdapter, AutoRedeemedCodesAdapter
+    from db.mongo_adapters import mongo_enabled, GiftCodesAdapter, AutoRedeemSettingsAdapter, AutoRedeemChannelsAdapter, GiftCodeRedemptionAdapter, AutoRedeemMembersAdapter, AutoRedeemedCodesAdapter, _get_db
 except Exception:
     mongo_enabled = lambda: False
     GiftCodesAdapter = None
@@ -20,6 +20,7 @@ except Exception:
     AutoRedeemChannelsAdapter = None
     AutoRedeemMembersAdapter = None
     AutoRedeemedCodesAdapter = None
+    _get_db = lambda: None
     
     # Fallback stub for GiftCodeRedemptionAdapter
     class GiftCodeRedemptionAdapter:
@@ -1369,11 +1370,37 @@ class ManageGiftCode(commands.Cog):
             # Add new codes to database with auto_redeem_processed = 0
             for code, date in new_codes:
                 try:
+                    # Insert into SQLite
                     self.cursor.execute(
                         "INSERT OR IGNORE INTO gift_codes (giftcode, date, validation_status, added_at, auto_redeem_processed) VALUES (?, ?, ?, ?, ?)",
                         (code, date, "validated", datetime.now(), 0)
                     )
-                    self.logger.info(f"Added new code to database: {code}")
+                    self.logger.info(f"Added new code to SQLite: {code}")
+                    
+                    # CRITICAL: Also insert into MongoDB if enabled
+                    if mongo_enabled() and GiftCodesAdapter and _get_db:
+                        try:
+                            # Insert the code with auto_redeem_processed = False
+                            db = _get_db()
+                            if db:
+                                db[GiftCodesAdapter.COLL].update_one(
+                                    {'_id': code},
+                                    {
+                                        '$set': {
+                                            'date': date,
+                                            'validation_status': 'validated',
+                                            'auto_redeem_processed': False,
+                                            'created_at': datetime.utcnow().isoformat(),
+                                            'updated_at': datetime.utcnow().isoformat()
+                                        }
+                                    },
+                                    upsert=True
+                                )
+                                self.logger.info(f"✅ Added new code to MongoDB: {code}")
+                        except Exception as mongo_err:
+                            self.logger.error(f"⚠️ Failed to add code {code} to MongoDB: {mongo_err}")
+                            # Continue anyway - SQLite is the fallback
+                    
                 except Exception as e:
                     self.logger.error(f"Error inserting code {code}: {e}")
             
