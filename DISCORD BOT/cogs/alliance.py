@@ -2614,7 +2614,7 @@ class Alliance(commands.Cog):
             
         elif change['type'] == 'avatar_change':
             embed = discord.Embed(
-                title="🖼️ Avatar Change Detected",
+                title="<a:profile:1454933848516464891> Avatar Change Detected",
                 color=discord.Color.purple()
             )
             
@@ -2640,7 +2640,7 @@ class Alliance(commands.Cog):
         elif change['type'] == 'furnace_change':
             # Determine if it's an upgrade or downgrade
             is_upgrade = change['new_value'] > change['old_value']
-            title = "🔥 Furnace Level Up 📈" if is_upgrade else "📉 Furnace Level Change"
+            title = "<a:furnace:1454930497623953591> Furnace Level Up 📈" if is_upgrade else "📉 Furnace Level Change"
             color = discord.Color.green() if is_upgrade else discord.Color.orange()
             
             embed = discord.Embed(
