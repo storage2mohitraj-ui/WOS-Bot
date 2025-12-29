@@ -35,14 +35,14 @@ class TicTacToeButton(discord.ui.Button):
         # Make the move
         view.board[self.y][self.x] = view.current_player
         
-        # Update button appearance with enhanced styling
+        # Update button appearance
         if view.current_player == view.player_x:
             self.style = discord.ButtonStyle.danger
-            self.label = 'X'
+            self.label = ''
             self.emoji = '❌'
         else:
             self.style = discord.ButtonStyle.primary
-            self.label = 'O'
+            self.label = ''
             self.emoji = '⭕'
         
         self.disabled = True
