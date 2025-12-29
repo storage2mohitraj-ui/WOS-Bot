@@ -150,7 +150,14 @@ class TicTacToeView(discord.ui.View):
         if is_draw:
             embed = discord.Embed(
                 title="Tic-Tac-Toe",
-                description="**It's a draw!**",
+                description=(
+                    f"```\n"
+                    f"╔══════════════╗\n"
+                    f"║   IT'S A     ║\n"
+                    f"║     DRAW!    ║\n"
+                    f"╚══════════════╝\n"
+                    f"```"
+                ),
                 color=0xFFD700
             )
             embed.add_field(
@@ -160,10 +167,18 @@ class TicTacToeView(discord.ui.View):
             )
         else:
             winner_symbol = '❌' if winner == self.player_x else '⭕'
+            winner_name = winner.display_name
             
             embed = discord.Embed(
                 title="Tic-Tac-Toe",
-                description=f"**{winner_symbol} {winner.mention} wins!**",
+                description=(
+                    f"```\n"
+                    f"╔══════════════╗\n"
+                    f"║   {winner_symbol} WINNER!   ║\n"
+                    f"╚══════════════╝\n"
+                    f"```\n"
+                    f"**{winner.mention}** wins the game!"
+                ),
                 color=0xFF1493 if winner == self.player_x else 0x1E90FF
             )
             embed.add_field(
