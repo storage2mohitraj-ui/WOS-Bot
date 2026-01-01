@@ -5,6 +5,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 
 # Install system dependencies needed for building wheels (lxml, numpy, pandas, matplotlib, etc.)
+# Added ffmpeg for voice conversation feature
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
@@ -20,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblapack-dev \
     pkg-config \
     git \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory

@@ -827,6 +827,7 @@ async def setup_hook():
         "cogs.server_age",
         "cogs.personalise_chat",
         "cogs.music",  # Music bot functionality
+        "cogs.voice_conversation",  # Voice chat with AI
         "cogs.auto_translate",  # Auto-translate with DeepL
         "cogs.message_extractor",  # Message extraction for global admins
         "cogs.tictactoe",  # Tic-Tac-Toe game

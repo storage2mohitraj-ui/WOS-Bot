@@ -3,6 +3,10 @@ set -e
 
 echo "[prebuild] Starting prebuild step"
 
+# Install ffmpeg for voice conversation feature (Render deployment)
+echo "[prebuild] Installing ffmpeg..."
+apt-get update && apt-get install -y ffmpeg || echo "[prebuild] ffmpeg install failed, continuing"
+
 # Ensure pip tooling
 python -m pip install --upgrade pip setuptools wheel || true
 

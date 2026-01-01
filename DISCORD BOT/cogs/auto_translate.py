@@ -101,10 +101,20 @@ class DeepLTranslator:
                 text,
                 target_lang='EN-US'
             )
-            return result.detected_source_lang.lower()
+            # Return normalized language code (e.g., 'en-us' -> 'en')
+            detected = result.detected_source_lang.lower()
+            return self._normalize_lang_code(detected)
         except Exception as e:
             logger.error(f"Language detection error: {e}")
             return 'en'
+    
+    def _normalize_lang_code(self, lang_code: str) -> str:
+        """Normalize language code to base form (e.g., 'en-us' -> 'en', 'pt-br' -> 'pt')"""
+        if not lang_code:
+            return 'en'
+        # Split on hyphen and take the first part
+        base_lang = lang_code.split('-')[0].lower()
+        return base_lang
     
     def get_supported_languages(self) -> dict:
         """Get supported languages (cached)"""
@@ -202,6 +212,12 @@ class AutoTranslate(commands.Cog):
     async def _process_translation(self, message: discord.Message, config: dict):
         """Process a single translation configuration"""
         try:
+            # Skip if message is too short (language detection is unreliable for short text)
+            min_text_length = config.get('min_text_length', 10)
+            if len(message.content.strip()) < min_text_length:
+                logger.info(f"Skipping translation: message too short ({len(message.content)} chars, minimum {min_text_length})")
+                return
+            
             # Skip if message has attachments and skip_attachments is enabled
             if config.get('skip_attachments') and message.attachments:
                 logger.info(f"Skipping translation: message has attachments and skip_attachments is enabled")
@@ -215,11 +231,14 @@ class AutoTranslate(commands.Cog):
             target_lang = config.get('target_language', '').lower()
             source_lang = config.get('source_language', '').lower() if config.get('source_language') else None
             
-            logger.info(f"Translation config: source={source_lang}, target={target_lang}, detected={detected_lang}")
+            # Normalize target language for comparison (e.g., 'en-us' -> 'en')
+            target_lang_normalized = self.translator._normalize_lang_code(target_lang)
             
-            # Ignore if source is target
-            if config.get('ignore_if_source_is_target') and detected_lang == target_lang:
-                logger.info(f"Skipping translation: detected language ({detected_lang}) matches target ({target_lang})")
+            logger.info(f"Translation config: source={source_lang}, target={target_lang_normalized}, detected={detected_lang}")
+            
+            # Ignore if source is target (with normalized comparison)
+            if config.get('ignore_if_source_is_target') and detected_lang == target_lang_normalized:
+                logger.info(f"Skipping translation: detected language ({detected_lang}) matches target ({target_lang_normalized})")
                 return
             
             # Ignore if source is not input
@@ -676,6 +695,7 @@ class OptionsView(discord.ui.View):
         self.config_data.setdefault('ignore_if_source_is_not_input', False)
         self.config_data.setdefault('skip_attachments', False)
         self.config_data.setdefault('attachment_mode', 'link')
+        self.config_data.setdefault('min_text_length', 10)  # Minimum message length to translate
         
         # Add option selects (one per row, max 5 rows)
         # Row 0: Style and Delete Original combined
