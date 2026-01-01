@@ -335,12 +335,20 @@ class VoiceConversation(commands.Cog):
             
             # Play and wait for finish
             if session.voice_client and session.voice_client.is_connected():
+                # Wait for any current audio to finish first
+                max_wait = 30  # Maximum 30 seconds wait
+                wait_count = 0
+                while session.voice_client.is_playing() and wait_count < max_wait * 10:
+                    await asyncio.sleep(0.1)
+                    wait_count += 1
+                
+                # Now play the new audio
                 session.voice_client.play(
                     audio_source,
                     after=lambda e: print(f"✅ Done speaking") if not e else print(f"❌ Play error: {e}")
                 )
                 
-                # Wait for finish
+                # Wait for this audio to finish
                 while session.voice_client.is_playing():
                     await asyncio.sleep(0.1)
             
