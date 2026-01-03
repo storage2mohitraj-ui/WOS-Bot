@@ -34,4 +34,4 @@ SpeechRecognition>=3.10.0
 pydub>=0.25.1
 soundfile>=0.12.1
 edge-tts>=6.1.0
-PyAudio>=0.2.14
+# PyAudio>=0.2.14  # Not needed - bot uses edge-tts for TTS, not PyAudio for microphone input
