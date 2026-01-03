@@ -410,12 +410,6 @@ class VoiceConversation(commands.Cog):
                 session.is_speaking = False
                 return
             
-            # Play audio using FFmpeg
-            if FFMPEG_PATH:
-                audio_source = discord.FFmpegPCMAudio(temp_path, executable=FFMPEG_PATH)
-            else:
-                audio_source = discord.FFmpegPCMAudio(temp_path)
-            
             # Play and wait for finish
             if session.voice_client and session.voice_client.is_connected():
                 # Wait for any current audio to finish first
@@ -425,21 +419,38 @@ class VoiceConversation(commands.Cog):
                     await asyncio.sleep(0.1)
                     wait_count += 1
                 
-                # Now play the new audio
-                session.voice_client.play(
-                    audio_source,
-                    after=lambda e: print(f"✅ Done speaking") if not e else print(f"❌ Play error: {e}")
-                )
+                # Create cleanup callback that removes file after playback
+                def cleanup_after_play(error):
+                    if error:
+                        print(f"❌ Play error: {error}")
+                    else:
+                        print(f"✅ Done speaking")
+                    # Clean up temp file after FFmpeg is done
+                    try:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                            print(f"🗑️ Cleaned up: {temp_path}")
+                    except Exception as e:
+                        print(f"⚠️ Cleanup error: {e}")
+                
+                # Play audio using FFmpeg
+                if FFMPEG_PATH:
+                    audio_source = discord.FFmpegPCMAudio(temp_path, executable=FFMPEG_PATH)
+                else:
+                    audio_source = discord.FFmpegPCMAudio(temp_path)
+                
+                # Start playback with cleanup callback
+                session.voice_client.play(audio_source, after=cleanup_after_play)
                 
                 # Wait for this audio to finish
                 while session.voice_client.is_playing():
                     await asyncio.sleep(0.1)
-            
-            # Cleanup
-            try:
-                os.remove(temp_path)
-            except:
-                pass
+            else:
+                # No voice client, clean up immediately
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
             
             session.is_speaking = False
             
