@@ -394,8 +394,8 @@ class VoiceConversation(commands.Cog):
                 session.is_speaking = False
                 return
             
-            # Generate TTS
-            audio_bytes = await audio_processor.text_to_speech(text, language="en")
+            # Generate TTS (using default English voice: en-US-AriaNeural)
+            audio_bytes = await audio_processor.text_to_speech(text)
             
             if not audio_bytes:
                 print("❌ TTS failed")
