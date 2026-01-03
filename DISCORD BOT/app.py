@@ -3,6 +3,15 @@ import sys
 import subprocess
 from pathlib import Path
 
+# CRITICAL: Force user site-packages to load BEFORE system packages
+# This ensures py-cord (user-installed) is used instead of discord.py (system-installed)
+import site
+user_site = site.getusersitepackages()
+if user_site and user_site in sys.path:
+    sys.path.remove(user_site)
+if user_site:
+    sys.path.insert(0, user_site)
+
 # Ensure repository root is on sys.path so modules like `db.mongo_adapters` can be imported
 repo_root = str(Path(__file__).resolve().parent)
 if repo_root not in sys.path:
@@ -59,9 +68,10 @@ def ensure_dependencies_installed():
         return False
 
 # Install dependencies first
-if not ensure_dependencies_installed():
-    print("[ERROR] Failed to install dependencies")
-    sys.exit(1)
+# TEMPORARILY DISABLED - manually install dependencies to avoid package conflicts
+# if not ensure_dependencies_installed():
+#     print("[ERROR] Failed to install dependencies")
+#     sys.exit(1)
 
 # ============================================================================
 # STEP 2: Now import everything else (safe because deps are installed)

@@ -1509,6 +1509,14 @@ class ManageGiftCode(commands.Cog):
             self.logger.info("🚀 === STARTUP AUTO-REDEEM CHECK ===")
             self.logger.info("Checking for existing unprocessed gift codes on startup...")
             
+            # Calculate cutoff date - only process codes added in the last 7 days
+            # This prevents re-processing old codes due to database inconsistencies
+            from datetime import timedelta
+            cutoff_date = datetime.now() - timedelta(days=7)
+            cutoff_date_str = cutoff_date.strftime("%Y-%m-%d")
+            
+            self.logger.info(f"📅 Only processing codes added after {cutoff_date_str}")
+            
             unprocessed_codes = []
             
             # Try MongoDB first - use the new get_all_with_status() method
@@ -1520,13 +1528,26 @@ class ManageGiftCode(commands.Cog):
                     # Get all codes from MongoDB with their auto_redeem_processed status
                     all_codes = GiftCodesAdapter.get_all_with_status()
                     if all_codes:
-                        # Filter for unprocessed codes
-                        unprocessed_codes = [
-                            (code['giftcode'], code.get('date', ''))
-                            for code in all_codes
-                            if not code.get('auto_redeem_processed', False)
-                        ]
-                        self.logger.info(f"✅ MongoDB: Found {len(unprocessed_codes)} unprocessed out of {len(all_codes)} total codes")
+                        # Filter for unprocessed codes added within the last 7 days
+                        for code in all_codes:
+                            if not code.get('auto_redeem_processed', False):
+                                # Check if code is recent enough
+                                code_date = code.get('created_at', code.get('date', ''))
+                                try:
+                                    # Parse the date and check if it's recent
+                                    if isinstance(code_date, str):
+                                        code_date_obj = datetime.fromisoformat(code_date.replace('Z', '+00:00'))
+                                    else:
+                                        code_date_obj = code_date
+                                    
+                                    if code_date_obj >= cutoff_date:
+                                        unprocessed_codes.append((code['giftcode'], code.get('date', '')))
+                                except Exception:
+                                    # If date parsing fails, skip this code to be safe
+                                    self.logger.warning(f"⚠️ Skipping code {code['giftcode']}: unable to parse date {code_date}")
+                                    continue
+                        
+                        self.logger.info(f"✅ MongoDB: Found {len(unprocessed_codes)} recent unprocessed codes out of {len(all_codes)} total")
                         if unprocessed_codes:
                             self.logger.info(f"📝 Unprocessed codes: {[c[0] for c in unprocessed_codes]}")
                     else:
@@ -1542,21 +1563,23 @@ class ManageGiftCode(commands.Cog):
             if not unprocessed_codes and (not mongo_enabled() or not GiftCodesAdapter or not mongo_attempted):
                 try:
                     self.logger.info("📂 Fetching codes from SQLite database...")
+                    # Only get codes added in the last 7 days that are unprocessed
                     self.cursor.execute("""
                         SELECT giftcode, date 
                         FROM gift_codes 
-                        WHERE auto_redeem_processed = 0 OR auto_redeem_processed IS NULL
-                        ORDER BY added_at DESC
-                    """)
+                        WHERE (auto_redeem_processed = 0 OR auto_redeem_processed IS NULL)
+                        AND (date >= ? OR date IS NULL)
+                        ORDER BY date DESC
+                    """, (cutoff_date_str,))
                     unprocessed_codes = self.cursor.fetchall()
-                    self.logger.info(f"✅ SQLite: Found {len(unprocessed_codes)} unprocessed codes")
+                    self.logger.info(f"✅ SQLite: Found {len(unprocessed_codes)} recent unprocessed codes")
                     if unprocessed_codes:
                         self.logger.info(f"📝 Unprocessed codes: {[c[0] for c in unprocessed_codes]}")
                 except Exception as e:
                     self.logger.error(f"❌ SQLite fetch failed: {e}")
             
             if not unprocessed_codes:
-                self.logger.info("✅ No unprocessed codes found (all codes processed or DB empty)")
+                self.logger.info("✅ No recent unprocessed codes found (all recent codes processed or DB empty)")
                 self.logger.info("🏁 === STARTUP AUTO-REDEEM CHECK COMPLETE ===")
                 return
             

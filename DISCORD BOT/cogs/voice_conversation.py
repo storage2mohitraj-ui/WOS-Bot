@@ -62,6 +62,7 @@ class VoiceSession:
         self.is_speaking = False
         self.start_time = datetime.now()
         self.message_count = 0
+        self.status_message = None  # Will store the welcome message with End Call button
         
     def add_message(self, role: str, content: str):
         """Add message to conversation history"""
@@ -76,6 +77,76 @@ class VoiceSession:
         """Get recent conversation context for AI"""
         recent = self.conversation_history[-max_messages:]
         return [{"role": msg["role"], "content": msg["content"]} for msg in recent]
+
+
+class EndCallView(discord.ui.View):
+    """View with End Call button for voice conversation"""
+    
+    def __init__(self, cog, guild_id: int):
+        super().__init__(timeout=None)  # No timeout - button stays active
+        self.cog = cog
+        self.guild_id = guild_id
+    
+    @discord.ui.button(label="🔴 End Call", style=discord.ButtonStyle.danger, custom_id="end_voice_call")
+    async def end_call_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle End Call button press"""
+        try:
+            # Check if session exists
+            if self.guild_id not in self.cog.active_sessions:
+                await interaction.response.send_message(
+                    "❌ Voice conversation has already ended!",
+                    ephemeral=True
+                )
+                return
+            
+            session = self.cog.active_sessions[self.guild_id]
+            
+            # Check permissions - only session owner or admins can end
+            if interaction.user.id != session.user_id and not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message(
+                    f"❌ Only <@{session.user_id}> or administrators can end this call!",
+                    ephemeral=True
+                )
+                return
+            
+            await interaction.response.defer()
+            
+            # Goodbye message
+            await self.cog._speak(session, "Goodbye! It was great talking with you. See you next time!")
+            await asyncio.sleep(3)
+            
+            # Cleanup
+            await self.cog._cleanup_session(self.guild_id)
+            
+            # Summary
+            duration = (datetime.now() - session.start_time).total_seconds()
+            minutes = int(duration // 60)
+            seconds = int(duration % 60)
+            
+            embed = discord.Embed(
+                title="👋 Voice Chat Ended",
+                description=(
+                    f"**Ended by:** {interaction.user.mention}\n"
+                    f"**Duration:** {minutes}m {seconds}s\n"
+                    f"**Messages:** {session.message_count}\n\n"
+                    "Use `/voice_chat` to start again!"
+                ),
+                color=0xFF5555
+            )
+            
+            await interaction.followup.send(embed=embed)
+            
+            # Disable the button
+            self.end_call_button.disabled = True
+            if session.status_message:
+                try:
+                    await session.status_message.edit(view=self)
+                except:
+                    pass
+            
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+            traceback.print_exc()
 
 
 class VoiceConversation(commands.Cog):
@@ -125,6 +196,13 @@ class VoiceConversation(commands.Cog):
                 )
                 self.active_sessions[interaction.guild.id] = session
                 
+                # Set voice channel status
+                try:
+                    await voice_channel.edit(status="֎ AI voice assistant: Molly")
+                    print("✅ Voice channel status updated")
+                except Exception as e:
+                    print(f"⚠️ Could not update voice channel status: {e}")
+                
                 # Welcome message
                 embed = discord.Embed(
                     title="🎙️ Voice Chat Active!",
@@ -133,7 +211,7 @@ class VoiceConversation(commands.Cog):
                         "**How it works:**\n"
                         "• Type your messages in this channel\n"
                         "• I'll respond with **voice** in the voice channel\n"
-                        "• Say 'goodbye' in text or use `/end_voice_chat` to stop\n\n"
+                        "• Click '🔴 End Call' button below or use `/end_voice_chat` to stop\n\n"
                         "**Note:** This is text→voice mode. For full voice conversation,\n"
                         "discord.py voice recording support is needed.\n"
                     ),
@@ -141,7 +219,12 @@ class VoiceConversation(commands.Cog):
                 )
                 embed.set_footer(text=f"Started by {interaction.user.name}")
                 
-                await interaction.followup.send(embed=embed)
+                # Create End Call button view
+                view = EndCallView(self, interaction.guild.id)
+                
+                # Send with button and store status message
+                status_msg = await interaction.followup.send(embed=embed, view=view)
+                session.status_message = status_msg
                 
                 # Speak greeting
                 await self._speak(session, "Hello! I'm listening. Type your messages and I'll respond with voice!")
@@ -371,6 +454,17 @@ class VoiceConversation(commands.Cog):
             if guild_id in self.active_sessions:
                 session = self.active_sessions[guild_id]
                 
+                # Clear voice channel status
+                try:
+                    guild = self.bot.get_guild(guild_id)
+                    if guild:
+                        voice_channel = guild.get_channel(session.channel_id)
+                        if voice_channel:
+                            await voice_channel.edit(status=None)
+                            print("✅ Voice channel status cleared")
+                except Exception as e:
+                    print(f"⚠️ Could not clear voice channel status: {e}")
+                
                 if session.voice_client and session.voice_client.is_connected():
                     await session.voice_client.disconnect(force=True)
                 
@@ -408,4 +502,6 @@ class VoiceConversation(commands.Cog):
 
 async def setup(bot):
     """Load the cog"""
+    # Note: This cog provides text-to-voice functionality
+    # Full voice recording features would require py-cord's discord.sinks
     await bot.add_cog(VoiceConversation(bot))

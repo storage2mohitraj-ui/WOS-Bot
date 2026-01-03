@@ -106,36 +106,65 @@ class AudioProcessor:
             traceback.print_exc()
             return None
     
-    async def text_to_speech(self, text: str, language: str = "en", slow: bool = False) -> Optional[bytes]:
+    async def text_to_speech(self, text: str, voice: str = "en-US-AriaNeural", rate: str = "+0%") -> Optional[bytes]:
         """
-        Convert text to speech audio using gTTS
+        Convert text to speech using Microsoft Edge TTS (natural voices)
         
         Args:
             text: Text to convert to speech
-            language: Language code (en, es, fr, etc.)
-            slow: Slower speech rate for clarity
+            voice: Voice to use (default: en-US-AriaNeural - natural female voice)
+                   Other options: en-US-GuyNeural (male), en-US-JennyNeural (female)
+            rate: Speech rate adjustment (e.g., "+10%" for faster, "-10%" for slower)
         
         Returns:
             Audio data bytes (MP3 format) or None if failed
         """
         try:
-            # Generate TTS
-            loop = asyncio.get_event_loop()
-            tts = await loop.run_in_executor(
-                None,
-                lambda: gTTS(text=text, lang=language, slow=slow)
-            )
+            import edge_tts
             
-            # Save to bytes
-            audio_bytes = io.BytesIO()
-            await loop.run_in_executor(
-                None,
-                tts.write_to_fp,
-                audio_bytes
-            )
-            audio_bytes.seek(0)
+            # Generate TTS using edge-tts
+            temp_output = self.temp_dir / f"edge_tts_{os.getpid()}.mp3"
             
-            return audio_bytes.read()
+            # Create communicate object
+            communicate = edge_tts.Communicate(text, voice, rate=rate)
+            
+            # Save to file
+            await communicate.save(str(temp_output))
+            
+            # Read the file
+            with open(temp_output, "rb") as f:
+                audio_bytes = f.read()
+            
+            # Cleanup
+            try:
+                temp_output.unlink()
+            except:
+                pass
+            
+            return audio_bytes
+            
+        except ImportError:
+            # Fallback to gTTS if edge-tts not available
+            print("⚠️ edge-tts not available, falling back to gTTS")
+            try:
+                from gtts import gTTS
+                loop = asyncio.get_event_loop()
+                tts = await loop.run_in_executor(
+                    None,
+                    lambda: gTTS(text=text, lang="en", slow=False)
+                )
+                
+                audio_bytes = io.BytesIO()
+                await loop.run_in_executor(
+                    None,
+                    tts.write_to_fp,
+                    audio_bytes
+                )
+                audio_bytes.seek(0)
+                return audio_bytes.read()
+            except Exception as e:
+                print(f"❌ gTTS fallback also failed: {e}")
+                return None
             
         except Exception as e:
             print(f"❌ Error in text-to-speech: {e}")
