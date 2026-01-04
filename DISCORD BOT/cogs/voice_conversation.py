@@ -240,7 +240,7 @@ class VoiceConversation(commands.Cog):
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listen for messages in active voice chat sessions"""
+        """Listen for messages in active voice chat sessions - OPTIMIZED for speed"""
         
         # Ignore bot messages
         if message.author.bot:
@@ -265,18 +265,33 @@ class VoiceConversation(commands.Cog):
         
         logger.info(f"📝 Processing message: {user_text}")
         
-        # Add to conversation history
-        session.add_message("user", user_text)
+        # IMMEDIATE FEEDBACK: Start typing indicator
+        async with message.channel.typing():
+            # Add to conversation history
+            session.add_message("user", user_text)
+            
+            # Quick reaction to show we're processing
+            try:
+                await message.add_reaction("🎙️")
+            except:
+                pass
+            
+            # Get AI response (optimized for speed)
+            ai_response = await self._get_ai_response(session, user_text)
+            
+            # Add to history
+            session.add_message("assistant", ai_response)
+            
+            logger.info(f"🤖 AI Response: {ai_response}")
         
-        # Get AI response
-        ai_response = await self._get_ai_response(session, user_text)
+        # Remove reaction and add done reaction
+        try:
+            await message.remove_reaction("🎙️", self.bot.user)
+            await message.add_reaction("✅")
+        except:
+            pass
         
-        # Add to history
-        session.add_message("assistant", ai_response)
-        
-        logger.info(f"🤖 AI Response: {ai_response}")
-        
-        # Speak the response
+        # Speak the response (this happens after text feedback)
         await self._speak(session, ai_response)
     
     async def _get_ai_response(self, session: VoiceSession, user_text: str) -> str:
@@ -287,18 +302,18 @@ class VoiceConversation(commands.Cog):
             return "I'm sorry, I'm currently operating in limited mode. My AI capabilities are temporarily unavailable."
         
         try:
-            # Build context
-            messages = session.get_context(max_messages=10)
+            # Build context (REDUCED for speed)
+            messages = session.get_context(max_messages=5)
             
-            # System prompt
-            system_prompt ="You are Molly, a friendly and helpful AI voice assistant. Keep responses concise and conversational since they will be spoken aloud."
+            # System prompt (optimized for brevity)
+            system_prompt = "You are Molly, a friendly AI voice assistant. Give SHORT, conversational responses (1-2 sentences max) since they'll be spoken aloud."
             
             # Make AI request - this is already async, yields control
             response = await make_request(
                 messages=messages,
                 system_prompt=system_prompt,
                 user_id=session.user_id,
-                max_tokens=150  # Shorter responses for voice
+                max_tokens=80  # REDUCED for faster responses
             )
             
             # Yield control to event loop
