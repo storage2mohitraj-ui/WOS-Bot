@@ -1,52 +1,34 @@
 """
-Voice Conversation Cog for Discord Bot
-Simplified version: Text input → Voice output (TTS only)
-Full voice recording requires discord.py[voice] with recording support
+Voice Conversation Cog - FIXED VERSION with Heartbeat Timeout Fix
+Handles voice chat sessions with proper async handling to prevent disconnections
 """
 
 import discord
 from discord.ext import commands
-from discord import app_commands
 import asyncio
 import os
-from typing import Optional, Dict
+import tempfile
 from datetime import datetime
-import traceback
+from typing import Dict, Optional
+import logging
 
-# Import audio processor
+logger = logging.getLogger(__name__)
+
+# Try to import TTS library
 try:
-    from audio_processor import audio_processor
+    from gtts import gTTS
+    TTS_AVAILABLE = True
 except ImportError:
-    audio_processor = None
-    print("⚠️ Could not import audio_processor - voice conversation will not work")
+    TTS_AVAILABLE = False
+    logger.warning("⚠️ gTTS not available - TTS features disabled")
 
-# Import OpenRouter for AI
+# Try to import AI system
 try:
     from api_manager import make_request
+    AI_AVAILABLE = True
 except ImportError:
-    make_request = None
-    print("⚠️ Could not import AI system - using fallback responses")
-
-# Find ffmpeg executable (Windows-specific path detection)
-import shutil
-FFMPEG_PATH = shutil.which("ffmpeg")
-
-# If not in PATH, try common Windows locations
-if not FFMPEG_PATH and os.name == 'nt':
-    import glob
-    # Check winget install location
-    winget_pattern = os.path.join(
-        os.environ.get('LOCALAPPDATA', ''), 
-        'Microsoft', 'WinGet', 'Packages', 'Gyan.FFmpeg*', '*', 'bin', 'ffmpeg.exe'
-    )
-    matches = glob.glob(winget_pattern)
-    if matches:
-        FFMPEG_PATH = matches[0]
-        print(f"✅ Found ffmpeg at: {FFMPEG_PATH}")
-    else:
-        print("⚠️ ffmpeg not found - voice playback will not work")
-        print("   Install with: winget install ffmpeg")
-
+    AI_AVAILABLE = False
+    logger.warning("⚠️ AI system not available - using fallback responses")
 
 
 class VoiceSession:
@@ -59,21 +41,17 @@ class VoiceSession:
         self.voice_client = voice_client
         self.text_channel = text_channel
         self.conversation_history = []
-        self.is_speaking = False
-        self.start_time = datetime.now()
-        self.message_count = 0
-        self.status_message = None  # Will store the welcome message with End Call button
-        
+        self.created_at = datetime.utcnow()
+    
     def add_message(self, role: str, content: str):
         """Add message to conversation history"""
         self.conversation_history.append({
             "role": role,
             "content": content,
-            "timestamp": datetime.now()
+            "timestamp": datetime.utcnow()
         })
-        self.message_count += 1
     
-    def get_context(self, max_messages: int = 10) -> list:
+    def get_context(self, max_messages: int = 10):
         """Get recent conversation context for AI"""
         recent = self.conversation_history[-max_messages:]
         return [{"role": msg["role"], "content": msg["content"]} for msg in recent]
@@ -83,7 +61,7 @@ class EndCallView(discord.ui.View):
     """View with End Call button for voice conversation"""
     
     def __init__(self, cog, guild_id: int):
-        super().__init__(timeout=None)  # No timeout - button stays active
+        super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
     
@@ -91,428 +69,399 @@ class EndCallView(discord.ui.View):
     async def end_call_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Handle End Call button press"""
         try:
-            # Check if session exists
+            await interaction.response.defer(ephemeral=True)
+            
+            # Check if user has permission
             if self.guild_id not in self.cog.active_sessions:
-                await interaction.response.send_message(
-                    "❌ Voice conversation has already ended!",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ No active voice session found.", ephemeral=True)
                 return
             
             session = self.cog.active_sessions[self.guild_id]
             
-            # Check permissions - only session owner or admins can end
+            # Only the user who started the session or admins can end it
             if interaction.user.id != session.user_id and not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message(
-                    f"❌ Only <@{session.user_id}> or administrators can end this call!",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ Only the user who started the session or administrators can end it.", ephemeral=True)
                 return
             
-            await interaction.response.defer()
-            
-            # Goodbye message
-            await self.cog._speak(session, "Goodbye! It was great talking with you. See you next time!")
-            await asyncio.sleep(3)
-            
-            # Cleanup
+            # End the session
             await self.cog._cleanup_session(self.guild_id)
             
-            # Summary
-            duration = (datetime.now() - session.start_time).total_seconds()
-            minutes = int(duration // 60)
-            seconds = int(duration % 60)
-            
-            embed = discord.Embed(
-                title="👋 Voice Chat Ended",
-                description=(
-                    f"**Ended by:** {interaction.user.mention}\n"
-                    f"**Duration:** {minutes}m {seconds}s\n"
-                    f"**Messages:** {session.message_count}\n\n"
-                    "Use `/voice_chat` to start again!"
-                ),
-                color=0xFF5555
-            )
-            
-            await interaction.followup.send(embed=embed)
-            
-            # Disable the button
-            self.end_call_button.disabled = True
-            if session.status_message:
-                try:
-                    await session.status_message.edit(view=self)
-                except:
-                    pass
+            await interaction.followup.send("✅ Voice chat session ended.", ephemeral=True)
             
         except Exception as e:
-            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
-            traceback.print_exc()
+            logger.error(f"Error ending voice session: {e}")
+            await interaction.followup.send("❌ Error ending session.", ephemeral=True)
 
 
 class VoiceConversation(commands.Cog):
-    """Voice conversation commands - Text to Voice"""
+    """Voice conversation commands - Text to Voice with Heartbeat Fix"""
     
     def __init__(self, bot):
         self.bot = bot
         self.active_sessions: Dict[int, VoiceSession] = {}
-        print("🎙️ Voice Conversation cog loaded (Text→Voice mode)")
+        self._temp_dir = tempfile.mkdtemp(prefix="discord_voice_chat_")
+        logger.info(f"📁 Voice temp directory: {self._temp_dir}")
     
-    @app_commands.command(name="voice_chat", description="Start voice conversation (type messages, bot responds with voice)")
+    @discord.app_commands.command(name="voice_chat", description="Start AI voice conversation")
     async def voice_chat(self, interaction: discord.Interaction):
         """Start voice conversation - you type, bot speaks"""
+        
+        # Check if user is in a voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(
+                "❌ You must be in a voice channel to start a voice chat!",
+                ephemeral=True
+            )
+            return
+        
+        guild_id = interaction.guild.id
+        
+        # Check if session already exists
+        if guild_id in self.active_sessions:
+            await interaction.response.send_message(
+                "⚠️ A voice chat session is already active in this server!",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
         try:
-            # Check if user is in a voice channel
-            if not interaction.user.voice:
-                await interaction.response.send_message(
-                    "❌ You need to be in a voice channel!\n"
-                    "Join a voice channel first, then try again.",
-                    ephemeral=True
-                )
-                return
-            
-            # Check if already active
-            if interaction.guild.id in self.active_sessions:
-                await interaction.response.send_message(
-                    "❌ Voice conversation already active!\n"
-                    f"Use `/end_voice_chat` to end it first.",
-                    ephemeral=True
-                )
-                return
-            
+            # Connect to voice channel with EXTENDED TIMEOUT and AUTO-RECONNECT
             voice_channel = interaction.user.voice.channel
-            await interaction.response.defer()
             
-            try:
-                # Connect to voice
-                voice_client = await voice_channel.connect(timeout=30.0, self_deaf=True)
-                
-                # Create session
-                session = VoiceSession(
-                    guild_id=interaction.guild.id,
-                    channel_id=voice_channel.id,
-                    user_id=interaction.user.id,
-                    voice_client=voice_client,
-                    text_channel=interaction.channel
-                )
-                self.active_sessions[interaction.guild.id] = session
-                
-                # Set voice channel status
+            # Try connecting with retry logic
+            voice_client = None
+            for attempt in range(3):
                 try:
-                    await voice_channel.edit(status="֎ AI voice assistant: Molly")
-                    print("✅ Voice channel status updated")
-                except Exception as e:
-                    print(f"⚠️ Could not update voice channel status: {e}")
-                
-                # Welcome message
-                embed = discord.Embed(
-                    title="🎙️ Voice Chat Active!",
-                    description=(
-                        f"**Connected to:** {voice_channel.mention}\n\n"
-                        "**How it works:**\n"
-                        "• Type your messages in this channel\n"
-                        "• I'll respond with **voice** in the voice channel\n"
-                        "• Click '🔴 End Call' button below or use `/end_voice_chat` to stop\n\n"
-                        "**Note:** This is text→voice mode. For full voice conversation,\n"
-                        "discord.py voice recording support is needed.\n"
-                    ),
-                    color=0x00FF00
-                )
-                embed.set_footer(text=f"Started by {interaction.user.name}")
-                
-                # Create End Call button view
-                view = EndCallView(self, interaction.guild.id)
-                
-                # Send with button and store status message
-                status_msg = await interaction.followup.send(embed=embed, view=view)
-                session.status_message = status_msg
-                
-                # Speak greeting
-                await self._speak(session, "Hello! I'm listening. Type your messages and I'll respond with voice!")
-                
-            except discord.ClientException:
+                    voice_client = await voice_channel.connect(
+                        timeout=60.0,        # Extended timeout (was 30s default)
+                        reconnect=True,       # Auto-reconnect on disconnect
+                        self_deaf=False,
+                        self_mute=False
+                    )
+                    break  # Success
+                except asyncio.TimeoutError:
+                    logger.warning(f"Voice connection attempt {attempt + 1}/3 timed out")
+                    if attempt < 2:
+                        await asyncio.sleep(2)
+                    else:
+                        raise
+            
+            if not voice_client:
                 await interaction.followup.send(
-                    "❌ Already connected to voice!",
-                    ephemeral=True
-                )
-            except Exception as e:
-                await interaction.followup.send(
-                    f"❌ Connection failed: {e}",
-                    ephemeral=True
-                )
-                traceback.print_exc()
-                
-        except Exception as e:
-            try:
-                await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
-            except:
-                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
-            traceback.print_exc()
-    
-    @app_commands.command(name="end_voice_chat", description="End voice conversation")
-    async def end_voice_chat(self, interaction: discord.Interaction):
-        """End voice conversation"""
-        try:
-            if interaction.guild.id not in self.active_sessions:
-                await interaction.response.send_message(
-                    "❌ No active voice conversation!",
+                    "❌ Failed to connect to voice channel after 3 attempts.",
                     ephemeral=True
                 )
                 return
             
-            session = self.active_sessions[interaction.guild.id]
-            await interaction.response.defer()
-            
-            # Goodbye
-            await self._speak(session, "Goodbye! It was nice talking. See you next time!")
-            await asyncio.sleep(3)
-            
-            # Cleanup
-            await self._cleanup_session(interaction.guild.id)
-            
-            # Summary
-            duration = (datetime.now() - session.start_time).total_seconds()
-            minutes = int(duration // 60)
-            seconds = int(duration % 60)
-            
-            embed = discord.Embed(
-                title="👋 Voice Chat Ended",
-                description=(
-                    f"**Duration:** {minutes}m {seconds}s\n"
-                    f"**Messages:** {session.message_count}\n\n"
-                    "Use `/voice_chat` to start again!"
-                ),
-                color=0xFF5555
+            # Create session
+            session = VoiceSession(
+                guild_id=guild_id,
+                channel_id=voice_channel.id,
+                user_id=interaction.user.id,
+                voice_client=voice_client,
+                text_channel=interaction.channel
             )
             
-            await interaction.followup.send(embed=embed)
+            self.active_sessions[guild_id] = session
             
+            # Set voice channel status
+            try:
+                await voice_channel.edit(status="🎙️ AI Voice Assistant: Molly")
+            except:
+                pass  # Status update is optional
+            
+            # Send control message with End Call button
+            view = EndCallView(self, guild_id)
+            await interaction.followup.send(
+                "✅ **Voice Chat Started!**\n"
+                f"🎙️ Connected to **{voice_channel.name}**\n\n"
+                "**How to use:**\n"
+                "• Type messages in this channel\n"
+                "• I'll respond with voice in the voice channel\n"
+                "• Click the button below to end the session\n\n"
+                "**System:** Heartbeat timeout fix enabled ✅",
+                view=view,
+                ephemeral=True
+            )
+            
+            # Welcome message
+            welcome_text = "Hello! I'm Molly, your AI voice assistant. How can I help you today?"
+            await self._speak(session, welcome_text)
+            session.add_message("assistant", welcome_text)
+            
+        except discord.ClientException as e:
+            await interaction.followup.send(
+                f"❌ Voice connection error: {str(e)}\n"
+                "The bot might already be in another voice channel.",
+                ephemeral=True
+            )
         except Exception as e:
-            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
-            traceback.print_exc()
+            logger.error(f"Error starting voice chat: {e}")
+            await interaction.followup.send(
+                f"❌ Error starting voice chat: {str(e)}",
+                ephemeral=True
+            )
+            # Cleanup on error
+            if guild_id in self.active_sessions:
+                await self._cleanup_session(guild_id)
+    
+    @discord.app_commands.command(name="end_voice_chat", description="End voice conversation")
+    async def end_voice_chat(self, interaction: discord.Interaction):
+        """End voice conversation"""
+        guild_id = interaction.guild.id
+        
+        if guild_id not in self.active_sessions:
+            await interaction.response.send_message(
+                "❌ No active voice chat session in this server.",
+                ephemeral=True
+            )
+            return
+        
+        session = self.active_sessions[guild_id]
+        
+        # Check permissions
+        if interaction.user.id != session.user_id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Only the user who started the session or administrators can end it.",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        await self._cleanup_session(guild_id)
+        
+        await interaction.followup.send(
+            "✅ Voice chat session ended.",
+            ephemeral=True
+        )
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen for messages in active voice chat sessions"""
-        try:
-            # Ignore bots
-            if message.author.bot:
-                return
-            
-            # Check if this guild has an active session
-            if message.guild.id not in self.active_sessions:
-                return
-            
-            session = self.active_sessions[message.guild.id]
-            
-            # Only process messages from the text channel where session started
-            if message.channel.id != session.text_channel.id:
-                return
-            
-            # Get message content
-            user_text = message.content.strip()
-            if not user_text:
-                return
-            
-            print(f"📝 Processing message: {user_text}")
-            
-            # Add to history
-            session.add_message("user", user_text)
-            
-            # Check for goodbye
-            if any(word in user_text.lower() for word in ["goodbye", "bye", "see you", "end chat"]):
-                await message.channel.send(f"👋 {message.author.mention} said goodbye!")
-                await self._cleanup_session(message.guild.id)
-                return
-            
-            # Get AI response
-            ai_response = await self._get_ai_response(session, user_text)
-            
-            if not ai_response:
-                ai_response = "I didn't quite understand that. Could you rephrase?"
-            
-            print(f"🤖 AI Response: {ai_response}")
-            
-            # Add to history
-            session.add_message("assistant", ai_response)
-            
-            # Show typing indicator
-            async with message.channel.typing():
-                # Speak response
-                await self._speak(session, ai_response)
-            
-            # Also send as text for reference
-            await message.reply(f"🔊 *Speaking:* {ai_response}", mention_author=False)
-            
-        except Exception as e:
-            print(f"❌ Error in on_message: {e}")
-            traceback.print_exc()
+        
+        # Ignore bot messages
+        if message.author.bot:
+            return
+        
+        guild_id = message.guild.id if message.guild else None
+        
+        # Check if there's an active session in this guild
+        if guild_id not in self.active_sessions:
+            return
+        
+        session = self.active_sessions[guild_id]
+        
+        # Only respond to messages in the session's text channel
+        if message.channel.id != session.text_channel.id:
+            return
+        
+        # Get user message
+        user_text = message.content.strip()
+        if not user_text:
+            return
+        
+        logger.info(f"📝 Processing message: {user_text}")
+        
+        # Add to conversation history
+        session.add_message("user", user_text)
+        
+        # Get AI response
+        ai_response = await self._get_ai_response(session, user_text)
+        
+        # Add to history
+        session.add_message("assistant", ai_response)
+        
+        logger.info(f"🤖 AI Response: {ai_response}")
+        
+        # Speak the response
+        await self._speak(session, ai_response)
     
     async def _get_ai_response(self, session: VoiceSession, user_text: str) -> str:
-        """Get AI response"""
+        """Get AI response - ASYNC to avoid blocking heartbeats"""
+        
+        if not AI_AVAILABLE:
+            # Fallback response
+            return "I'm sorry, I'm currently operating in limited mode. My AI capabilities are temporarily unavailable."
+        
         try:
-            if make_request:
-                system_prompt = (
-                    "You are Molly, a friendly Discord bot in a voice conversation. "
-                    "Keep responses SHORT (1-2 sentences) since they'll be spoken aloud. "
-                    "Be natural and conversational."
-                )
-                
-                context = session.get_context(max_messages=6)
-                messages = [{"role": "system", "content": system_prompt}] + context
-                
-                response = await make_request(messages=messages)
-                
-                if response and response.strip():
-                    response = response.strip()
-                    # Limit length
-                    if len(response) > 200:
-                        sentences = response.split('. ')
-                        response = sentences[0] + '.'
-                    return response
-                else:
-                    return "I didn't get that. Can you say it differently?"
-            else:
-                # Fallback
-                import random
-                return random.choice([
-                    "That's interesting! Tell me more.",
-                    "I see. What else?",
-                    "That's a great point!",
-                ])
-                
+            # Build context
+            messages = session.get_context(max_messages=10)
+            
+            # System prompt
+            system_prompt ="You are Molly, a friendly and helpful AI voice assistant. Keep responses concise and conversational since they will be spoken aloud."
+            
+            # Make AI request - this is already async, yields control
+            response = await make_request(
+                messages=messages,
+                system_prompt=system_prompt,
+                user_id=session.user_id,
+                max_tokens=150  # Shorter responses for voice
+            )
+            
+            # Yield control to event loop
+            await asyncio.sleep(0)
+            
+            return response.strip() if response else "I'm not sure how to respond to that."
+            
         except Exception as e:
-            print(f"❌ Error getting AI response: {e}")
-            return "I had trouble with that. Try again?"
+            logger.error(f"AI request error: {e}")
+            return "I'm having trouble processing that request right now."
     
     async def _speak(self, session: VoiceSession, text: str):
-        """Convert text to speech and play"""
+        """Convert text to speech and play - FIXED VERSION with async handling"""
+        
+        voice_client = session.voice_client
+        
+        # Safety check - ensure connected
+        if not voice_client or not voice_client.is_connected():
+            logger.warning("⚠️ Voice client not connected, skipping playback")
+            return
+        
+        if not TTS_AVAILABLE:
+            logger.warning("⚠️ TTS not available")
+            return
+        
         try:
-            session.is_speaking = True
+            # Generate TTS file ASYNCHRONOUSLY (doesn't block event loop!)
+            loop = asyncio.get_event_loop()
+            audio_path = await loop.run_in_executor(
+                None,  # Use default thread pool
+                self._generate_tts_sync,
+                text,
+                session.guild_id
+            )
             
-            if not audio_processor:
-                print("❌ Audio processor not available")
-                session.is_speaking = False
+            if not audio_path or not os.path.exists(audio_path):
+                logger.error("❌ TTS generation failed")
                 return
             
-            # Generate TTS (using default English voice: en-US-AriaNeural)
-            audio_bytes = await audio_processor.text_to_speech(text)
+            # Wait if already playing
+            if voice_client.is_playing():
+                voice_client.stop()
+                await asyncio.sleep(0.1)
             
-            if not audio_bytes:
-                print("❌ TTS failed")
-                session.is_speaking = False
-                return
+            # Create audio source
+            audio_source = discord.FFmpegPCMAudio(
+                audio_path,
+                options='-loglevel error'  # Reduce ffmpeg output
+            )
             
-            # Save temp
-            temp_path = await audio_processor.save_temp_audio(audio_bytes, format="mp3")
+            # Setup cleanup callback
+            def cleanup(error):
+                if error:
+                    logger.error(f"❌ Playback error: {error}")
+                # Schedule async cleanup
+                asyncio.create_task(self._cleanup_audio_file(audio_path))
             
-            if not temp_path:
-                print("❌ Save failed")
-                session.is_speaking = False
-                return
+            # Play audio
+            voice_client.play(audio_source, after=cleanup)
             
-            # Play and wait for finish
-            if session.voice_client and session.voice_client.is_connected():
-                # Wait for any current audio to finish first
-                max_wait = 30  # Maximum 30 seconds wait
-                wait_count = 0
-                while session.voice_client.is_playing() and wait_count < max_wait * 10:
-                    await asyncio.sleep(0.1)
-                    wait_count += 1
+            # Wait for playback WITHOUT blocking event loop
+            while voice_client.is_playing():
+                await asyncio.sleep(0.5)  # Check every 500ms, yields control
                 
-                # Create cleanup callback that removes file after playback
-                def cleanup_after_play(error):
-                    if error:
-                        print(f"❌ Play error: {error}")
-                    else:
-                        print(f"✅ Done speaking")
-                    # Clean up temp file after FFmpeg is done
-                    try:
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
-                            print(f"🗑️ Cleaned up: {temp_path}")
-                    except Exception as e:
-                        print(f"⚠️ Cleanup error: {e}")
-                
-                # Play audio using FFmpeg
-                if FFMPEG_PATH:
-                    audio_source = discord.FFmpegPCMAudio(temp_path, executable=FFMPEG_PATH)
-                else:
-                    audio_source = discord.FFmpegPCMAudio(temp_path)
-                
-                # Start playback with cleanup callback
-                session.voice_client.play(audio_source, after=cleanup_after_play)
-                
-                # Wait for this audio to finish
-                while session.voice_client.is_playing():
-                    await asyncio.sleep(0.1)
-            else:
-                # No voice client, clean up immediately
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
+                # Safety check
+                if not voice_client.is_connected():
+                    logger.warning("⚠️ Voice client disconnected during playback")
+                    break
             
-            session.is_speaking = False
+            logger.info("✅ Done speaking")
             
         except Exception as e:
-            print(f"❌ Error speaking: {e}")
-            traceback.print_exc()
-            session.is_speaking = False
+            logger.error(f"TTS error: {e}")
+            # Cleanup on error
+            if 'audio_path' in locals() and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except:
+                    pass
+    
+    def _generate_tts_sync(self, text: str, guild_id: int) -> Optional[str]:
+        """Generate TTS file synchronously (runs in thread pool)"""
+        try:
+            # Create unique filename
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            filename = f"voice_response_{guild_id}_{timestamp}.mp3"
+            filepath = os.path.join(self._temp_dir, filename)
+            
+            # Generate TTS
+            tts = gTTS(text=text, lang='en', slow=False)
+            tts.save(filepath)
+            
+            return filepath
+            
+        except Exception as e:
+            logger.error(f"TTS generation error: {e}")
+            return None
+    
+    async def _cleanup_audio_file(self, filepath: str):
+        """Cleanup audio file after playback"""
+        try:
+            if os.path.exists(filepath):
+                # Small delay to ensure playback finished
+                await asyncio.sleep(0.5)
+                os.remove(filepath)
+                logger.info(f"🗑️ Cleaned up: {filepath}")
+        except Exception as e:
+            logger.warning(f"⚠️ Cleanup failed for {filepath}: {e}")
     
     async def _cleanup_session(self, guild_id: int):
         """Cleanup session"""
+        if guild_id not in self.active_sessions:
+            return
+        
+        session = self.active_sessions[guild_id]
+        
         try:
-            if guild_id in self.active_sessions:
-                session = self.active_sessions[guild_id]
-                
-                # Clear voice channel status
-                try:
-                    guild = self.bot.get_guild(guild_id)
-                    if guild:
-                        voice_channel = guild.get_channel(session.channel_id)
-                        if voice_channel:
-                            await voice_channel.edit(status=None)
-                            print("✅ Voice channel status cleared")
-                except Exception as e:
-                    print(f"⚠️ Could not clear voice channel status: {e}")
-                
-                if session.voice_client and session.voice_client.is_connected():
-                    await session.voice_client.disconnect(force=True)
-                
-                del self.active_sessions[guild_id]
-                print(f"✅ Cleaned up session for guild {guild_id}")
-                
+            # Clear voice channel status
+            try:
+                channel = self.bot.get_channel(session.channel_id)
+                if channel and hasattr(channel, 'edit'):
+                    await channel.edit(status=None)
+                    logger.info("✅ Voice channel status cleared")
+            except:
+                pass
+            
+            # Disconnect from voice
+            if session.voice_client and session.voice_client.is_connected():
+                await session.voice_client.disconnect(force=True)
+            
+            # Remove session
+            del self.active_sessions[guild_id]
+            
+            logger.info(f"✅ Cleaned up session for guild {guild_id}")
+            
         except Exception as e:
-            print(f"⚠️ Cleanup error: {e}")
+            logger.error(f"Cleanup error: {e}")
     
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Handle voice disconnects"""
-        try:
-            if member.guild.id not in self.active_sessions:
-                return
-            
-            session = self.active_sessions[member.guild.id]
-            
-            # Bot disconnected
-            if member == member.guild.me and after.channel is None:
-                await self._cleanup_session(member.guild.id)
-                print("🛑 Bot disconnected - cleaned up")
-            
-            # User left
-            elif member.id == session.user_id and after.channel is None:
-                await asyncio.sleep(30)
-                member_updated = member.guild.get_member(member.id)
-                if not member_updated.voice or member_updated.voice.channel.id != session.channel_id:
-                    await self._cleanup_session(member.guild.id)
-                    print("🛑 User left - cleaned up")
-                    
-        except Exception as e:
-            print(f"⚠️ Voice state error: {e}")
+        
+        # Check if bot was disconnected
+        if member.id != self.bot.user.id:
+            return
+        
+        # Bot left a voice channel
+        if before.channel and not after.channel:
+            guild_id = before.channel.guild.id
+            if guild_id in self.active_sessions:
+                logger.info("🛑 Bot disconnected - cleaned up")
+                await self._cleanup_session(guild_id)
+    
+    def cog_unload(self):
+        """Cleanup when cog is unloaded"""
+        # Cleanup all sessions
+        for guild_id in list(self.active_sessions.keys()):
+            try:
+                asyncio.create_task(self._cleanup_session(guild_id))
+            except:
+                pass
 
 
 async def setup(bot):
     """Load the cog"""
-    # Note: This cog provides text-to-voice functionality
-    # Full voice recording features would require py-cord's discord.sinks
     await bot.add_cog(VoiceConversation(bot))
