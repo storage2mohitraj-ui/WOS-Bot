@@ -110,7 +110,7 @@ print("[SETUP] Bot initialization complete")
 
 import discord
 from discord.ext import commands
-from discord import app_commands
+# py-cord uses discord.app_commands, not a separate import
 from dotenv import load_dotenv
 import os
 import json
