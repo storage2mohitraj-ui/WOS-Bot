@@ -4759,13 +4759,13 @@ class ManageGiftCode(commands.Cog):
                     if success:
                         formatted_fc = self.format_furnace_level(player_data['furnace_lv'])
                         embed = discord.Embed(
-                            title="✨ Auto-Redeem Active",
+                            title="✨ Auto-Redeem",
                             description=f"Successfully registered **{player_data['nickname']}** for automated gift code redemption.",
                             color=0x2ecc71
                         )
                         embed.add_field(name="Player ID", value=f"`{fid}`", inline=True)
                         embed.add_field(name="Furnace", value=f"`{formatted_fc}`", inline=True)
-                        embed.add_field(name="Status", value="`Watching for Codes` ⚡", inline=False)
+                        embed.add_field(name="Status", value="`A` ⚡", inline=False)
                         
                         # Add player avatar if available
                         avatar = player_data.get('avatar_image')
@@ -4773,7 +4773,7 @@ class ManageGiftCode(commands.Cog):
                             embed.set_thumbnail(url=avatar)
                         
                         embed.set_footer(
-                            text=f"Magnus System • {message.guild.name}", 
+                            text="Whiteout Survival || Magnus", 
                             icon_url=self.bot.user.display_avatar.url
                         )
                         await message.reply(embed=embed)
