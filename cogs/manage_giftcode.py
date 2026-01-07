@@ -4759,13 +4759,13 @@ class ManageGiftCode(commands.Cog):
                     if success:
                         formatted_fc = self.format_furnace_level(player_data['furnace_lv'])
                         embed = discord.Embed(
-                            title="✨ Auto-Redeem",
-                            description=f"Successfully registered **{player_data['nickname']}** for automated gift code redemption.",
+                            title="✨ Auto-Redeem Registered",
+                            description=f"✅ **{player_data['nickname']}** is now enrolled for automated gift codes.",
                             color=0x2ecc71
                         )
                         embed.add_field(name="Player ID", value=f"`{fid}`", inline=True)
                         embed.add_field(name="Furnace", value=f"`{formatted_fc}`", inline=True)
-                        embed.add_field(name="Status", value="`Active` ⚡", inline=False)
+                        embed.add_field(name="🚀 Auto-Processing", value="`Initializing...`", inline=False)
                         
                         # Add player avatar if available
                         avatar = player_data.get('avatar_image')
@@ -4774,10 +4774,70 @@ class ManageGiftCode(commands.Cog):
                         
                         embed.set_footer(
                             text="Whiteout Survival || Magnus", 
-                            icon_url=self.bot.user.display_avatar.url
+                            icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None
                         )
-                        await message.reply(embed=embed)
+                        
+                        sent_msg = await message.reply(embed=embed)
                         self.logger.info(f"✅ Successfully auto-added {player_data['nickname']} ({fid}) from channel in guild {message.guild.id}")
+                        
+                        # Start immediate redemption process for active codes
+                        async def process_initial_redemptions():
+                            try:
+                                # Get all valid/active gift codes from DB
+                                self.cursor.execute("SELECT giftcode FROM gift_codes WHERE validation_status = 'validated' OR validation_status = 'pending'")
+                                active_codes = [r[0] for r in self.cursor.fetchall()]
+                                
+                                if not active_codes:
+                                    embed.set_field_at(2, name="🚀 Auto-Processing", value="`No active codes found to redeem.`", inline=False)
+                                    await sent_msg.edit(embed=embed)
+                                    return
+
+                                total = len(active_codes)
+                                embed.set_field_at(2, name="🚀 Auto-Processing", value=f"`Checking {total} active codes...`", inline=False)
+                                await sent_msg.edit(embed=embed)
+                                
+                                redeemed = 0
+                                already = 0
+                                failed = 0
+                                
+                                # Process each code
+                                for i, code in enumerate(active_codes):
+                                    embed.set_field_at(2, name="🚀 Auto-Processing", value=f"`Processing code {i+1}/{total}:` **`{code}`**", inline=False)
+                                    await sent_msg.edit(embed=embed)
+                                    
+                                    # Use the core redemption method
+                                    status, s_count, a_count, f_count = await self._redeem_for_member(
+                                        message.guild.id, 
+                                        fid, 
+                                        player_data['nickname'], 
+                                        player_data['furnace_lv'], 
+                                        code
+                                    )
+                                    
+                                    redeemed += s_count
+                                    already += a_count
+                                    failed += f_count
+                                    
+                                    # Small delay between codes to be safe with rate limits
+                                    await asyncio.sleep(1)
+                                
+                                # Final update
+                                embed.set_field_at(2, name="🚀 Redemption Results", value=(
+                                    f"✅ Success: `{redeemed}`\n"
+                                    f"ℹ️ Already Claimed: `{already}`\n"
+                                    f"❌ Failed: `{failed}`"
+                                ), inline=False)
+                                embed.title = "✨ Auto-Redeem Complete"
+                                await sent_msg.edit(embed=embed)
+                                
+                            except Exception as e:
+                                self.logger.error(f"Error in initial redemption process for FID {fid}: {e}")
+                                embed.set_field_at(2, name="🚀 Auto-Processing", value="`⚠️ Error during batch redemption.`", inline=False)
+                                try: await sent_msg.edit(embed=embed)
+                                except: pass
+                        
+                        # Run in background
+                        asyncio.create_task(process_initial_redemptions())
                     else:
                         self.logger.error(f"Failed to add ID {fid} to database for guild {message.guild.id}")
                         await message.reply(
