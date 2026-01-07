@@ -4765,7 +4765,7 @@ class ManageGiftCode(commands.Cog):
                         )
                         embed.add_field(name="Player ID", value=f"`{fid}`", inline=True)
                         embed.add_field(name="Furnace", value=f"`{formatted_fc}`", inline=True)
-                        embed.add_field(name="Status", value="`A` ⚡", inline=False)
+                        embed.add_field(name="Status", value="`Active` ⚡", inline=False)
                         
                         # Add player avatar if available
                         avatar = player_data.get('avatar_image')
