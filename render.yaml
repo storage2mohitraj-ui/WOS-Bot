@@ -4,7 +4,7 @@ services:
 - type: web
   name: DISCORD-BOT-2
   runtime: python
-  repo: https://github.com/storage2mohitraj-ui/WOS-Bot.git
+  repo: https://github.com/stotoons01-ux/DISCORD-BOT
   plan: free
   envVars:
   - key: DISCORD_TOKEN
@@ -60,7 +60,7 @@ services:
   - key: PYTHONUNBUFFERED
     value: "1"
   - key: PYTHONPATH
-    value: "/opt/render/project/src/DISCORD BOT"
+    value: "/opt/render/project/src"
   - key: DEV_GUILD_ID
     sync: false
   - key: GUILD_ID
@@ -84,8 +84,8 @@ services:
   - key: BOT_OWNER_ID
     sync: false
   region: singapore
-  buildCommand: pip install -r "DISCORD BOT/requirements.txt"
-  startCommand: cd "DISCORD BOT" && export PYTHONPATH=/opt/render/project/src/DISCORD\ BOT:$PYTHONPATH && python app.py
+  buildCommand: pip install -r requirements.txt
+  startCommand: python app.py
   autoDeployTrigger: commit
   # Health check configuration to prevent auto-shutdown
   healthCheckPath: /health

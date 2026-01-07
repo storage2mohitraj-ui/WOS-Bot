@@ -36,16 +36,11 @@ bot_venv/
 bot_token.txt
 version
 .python-version
-creds.json
-mongo_uri.txt
 
 # --- Databases & Logs ---
-# Allow db directory and Python files, but ignore database files
-db/*.sqlite*
-db/*.db
-db/backups/
-db/__pycache__/
-db.bak/
+db/
+!db/*.py
+db.bak
 log/
 logs/
 *.log
