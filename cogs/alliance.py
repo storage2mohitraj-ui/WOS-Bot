@@ -2224,6 +2224,7 @@ class Alliance(commands.Cog):
                         alliance_id INTEGER NOT NULL,
                         nickname TEXT NOT NULL,
                         furnace_lv INTEGER NOT NULL,
+                        state_id TEXT,
                         last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(fid, alliance_id)
                     )
@@ -2255,6 +2256,17 @@ class Alliance(commands.Cog):
                         self.log_message("Added avatar_image column to member_history")
                     except Exception as e:
                         self.log_message(f"Error adding avatar_image column: {e}")
+                
+                # Check if state_id column exists
+                try:
+                    cursor.execute("SELECT state_id FROM member_history LIMIT 1")
+                except Exception:
+                    try:
+                        cursor.execute("ALTER TABLE member_history ADD COLUMN state_id TEXT")
+                        conn.commit()
+                        self.log_message("Added state_id column to member_history")
+                    except Exception as e:
+                        self.log_message(f"Error adding state_id column: {e}")
                         
         except Exception as e:
             self.log_message(f"Error initializing database: {e}")
@@ -2319,7 +2331,8 @@ class Alliance(commands.Cog):
                         fid = str(d.get('fid') or d.get('id') or d.get('_id'))
                         nickname = d.get('nickname') or d.get('name') or ''
                         furnace_lv = int(d.get('furnace_lv') or d.get('furnaceLevel') or d.get('furnace', 0) or 0)
-                        res.append((fid, nickname, furnace_lv))
+                        state_id = str(d.get('state_id') or d.get('kid') or '')
+                        res.append((fid, nickname, furnace_lv, state_id))
                     except Exception:
                         continue
                 if res:
@@ -2331,7 +2344,7 @@ class Alliance(commands.Cog):
         try:
             with get_db_connection('users.sqlite') as users_db:
                 cursor = users_db.cursor()
-                cursor.execute("SELECT fid, nickname, furnace_lv FROM users WHERE alliance = ?", (alliance_id,))
+                cursor.execute("SELECT fid, nickname, furnace_lv, kid FROM users WHERE alliance = ?", (alliance_id,))
                 return cursor.fetchall()
         except Exception:
             return []
@@ -2396,9 +2409,15 @@ class Alliance(commands.Cog):
                 self.log_message(f"Channel {channel_id} not found")
                 return
             
-            # Extract FIDs for batch processing
-            fids = [str(fid) for fid, _, _ in current_members]
-            member_map = {str(fid): (nickname, furnace_lv) for fid, nickname, furnace_lv in current_members}
+            # Extract FIDs and current states for tracking
+            fids = [str(fid) for fid, _, _, *rest in current_members]
+            member_map = {}
+            for m in current_members:
+                fid = str(m[0])
+                nickname = m[1]
+                furnace_lv = m[2]
+                state_id = m[3] if len(m) > 3 else ''
+                member_map[fid] = (nickname, furnace_lv, state_id)
             
             self.log_message(f"Fetching data for {len(fids)} members using {'dual-API' if self.login_handler.dual_api_mode else 'single-API'} mode...")
             
@@ -2415,13 +2434,14 @@ class Alliance(commands.Cog):
             
             for i, api_result in enumerate(api_results):
                 fid = fids[i]
-                current_nickname, current_furnace_lv = member_map[fid]
+                current_nickname, current_furnace_lv, current_state_id = member_map[fid]
                 
                 if api_result['status'] == 'success':
                     successful_fetches += 1
                     api_data = api_result['data']
                     api_nickname = api_data.get('nickname', current_nickname)
                     api_furnace_lv = api_data.get('stove_lv', current_furnace_lv)
+                    api_state_id = str(api_data.get('kid', current_state_id))
                     
                     # Get historical data
                     if mongo_enabled() and AllianceMembersAdapter is not None:
@@ -2470,11 +2490,26 @@ class Alliance(commands.Cog):
                                     'avatar_image': api_data.get('avatar_image', '')
                                 })
                             
+                            # Check for state change (Transfer)
+                            old_state_id = str(doc.get('state_id') or doc.get('kid') or '')
+                            if old_state_id and api_state_id != old_state_id:
+                                changes_detected.append({
+                                    'type': 'state_change',
+                                    'fid': fid,
+                                    'nickname': api_nickname,
+                                    'old_value': old_state_id,
+                                    'new_value': api_state_id,
+                                    'furnace_lv': api_furnace_lv,
+                                    'alliance_name': alliance_name,
+                                    'avatar_image': api_data.get('avatar_image', '')
+                                })
+                            
                             # Update MongoDB document
                             doc['fid'] = str(fid)
                             doc['alliance'] = alliance_id
                             doc['nickname'] = api_nickname
                             doc['furnace_lv'] = api_furnace_lv
+                            doc['state_id'] = api_state_id
                             doc['avatar_image'] = api_data.get('avatar_image', '')
                             doc['last_checked'] = datetime.utcnow()
                             
@@ -2488,7 +2523,7 @@ class Alliance(commands.Cog):
                         with get_db_connection('settings.sqlite') as conn:
                             cursor = conn.cursor()
                             cursor.execute("""
-                                SELECT nickname, furnace_lv, avatar_image
+                                SELECT nickname, furnace_lv, avatar_image, state_id
                                 FROM member_history 
                                 WHERE fid = ? AND alliance_id = ?
                             """, (str(fid), alliance_id))
@@ -2537,14 +2572,28 @@ class Alliance(commands.Cog):
                                         'alliance_name': alliance_name,
                                         'avatar_image': api_data.get('avatar_image', '')
                                     })
+                                
+                                # Check for state change
+                                old_state_id = history[3] if len(history) > 3 and history[3] else ''
+                                if old_state_id and api_state_id != old_state_id:
+                                    changes_detected.append({
+                                        'type': 'state_change',
+                                        'fid': fid,
+                                        'nickname': api_nickname,
+                                        'old_value': old_state_id,
+                                        'new_value': api_state_id,
+                                        'furnace_lv': api_furnace_lv,
+                                        'alliance_name': alliance_name,
+                                        'avatar_image': api_data.get('avatar_image', '')
+                                    })
                             
                             # Update or insert history
                             api_avatar = api_data.get('avatar_image', '')
                             cursor.execute("""
                                 INSERT OR REPLACE INTO member_history 
-                                (fid, alliance_id, nickname, furnace_lv, avatar_image, last_checked)
-                                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                            """, (str(fid), alliance_id, api_nickname, api_furnace_lv, api_avatar))
+                                (fid, alliance_id, nickname, furnace_lv, state_id, avatar_image, last_checked)
+                                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            """, (str(fid), alliance_id, api_nickname, api_furnace_lv, api_state_id, api_avatar))
                             
                             conn.commit()
                 else:
@@ -2657,6 +2706,27 @@ class Alliance(commands.Cog):
             embed.add_field(name="👤 Player Name", value=f"`{change['nickname']}`", inline=False)
             embed.add_field(name="📊 Previous Level", value=f"{old_emoji} `{old_level_str}`", inline=True)
             embed.add_field(name="🎉 New Level", value=f"{new_emoji} `{new_level_str}`", inline=True)
+            embed.add_field(name="🏰 Alliance", value=f"`{change['alliance_name']}`", inline=True)
+            embed.add_field(name="🕐 Time", value=f"`{timestamp}`", inline=True)
+            
+            if change.get('avatar_image'):
+                embed.set_thumbnail(url=change['avatar_image'])
+        
+        elif change['type'] == 'state_change':
+            embed = discord.Embed(
+                title="✈️ State Transfer Detected",
+                description=f"**{change['nickname']}** has transferred to a different state!",
+                color=discord.Color.gold()
+            )
+            
+            furnace_level_str = self.level_mapping.get(change['furnace_lv'], str(change['furnace_lv']))
+            fl_emoji = self.get_fl_emoji(change['furnace_lv'])
+            
+            embed.add_field(name="Player 🆔", value=f"`{change['fid']}`", inline=False)
+            embed.add_field(name="👤 Player Name", value=f"`{change['nickname']}`", inline=False)
+            embed.add_field(name="🌍 Old State", value=f"`#{change['old_value']}`", inline=True)
+            embed.add_field(name="🚀 New State", value=f"**`#{change['new_value']}`**", inline=True)
+            embed.add_field(name="⚔️ Furnace Level", value=f"{fl_emoji} `{furnace_level_str}`", inline=False)
             embed.add_field(name="🏰 Alliance", value=f"`{change['alliance_name']}`", inline=True)
             embed.add_field(name="🕐 Time", value=f"`{timestamp}`", inline=True)
             
