@@ -4759,19 +4759,23 @@ class ManageGiftCode(commands.Cog):
                     if success:
                         formatted_fc = self.format_furnace_level(player_data['furnace_lv'])
                         embed = discord.Embed(
-                            title="🎉 Welcome to Auto-Redeem!",
-                            description=(
-                                f"**{player_data['nickname']}** has been successfully registered!\n\n"
-                                f"🆔 **Player ID:** `{fid}`\n"
-                                f"🔥 **Furnace Level:** {formatted_fc}\n\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🎁 **What's Next?**\n"
-                                f"You'll automatically receive all new gift codes as soon as they're available!\n\n"
-                                f"{message.author.mention} Sit back and enjoy the rewards! 🚀"
-                            ),
-                            color=0x57F287
+                            title="✨ Auto-Redeem Active",
+                            description=f"Successfully registered **{player_data['nickname']}** for automated gift code redemption.",
+                            color=0x2ecc71
                         )
-                        embed.set_footer(text=f"{message.guild.name} x Magnus🚀")
+                        embed.add_field(name="Player ID", value=f"`{fid}`", inline=True)
+                        embed.add_field(name="Furnace", value=f"`{formatted_fc}`", inline=True)
+                        embed.add_field(name="Status", value="`Watching for Codes` ⚡", inline=False)
+                        
+                        # Add player avatar if available
+                        avatar = player_data.get('avatar_image')
+                        if avatar and str(avatar).startswith('http'):
+                            embed.set_thumbnail(url=avatar)
+                        
+                        embed.set_footer(
+                            text=f"Magnus System • {message.guild.name}", 
+                            icon_url=self.bot.user.display_avatar.url
+                        )
                         await message.reply(embed=embed)
                         self.logger.info(f"✅ Successfully auto-added {player_data['nickname']} ({fid}) from channel in guild {message.guild.id}")
                     else:
