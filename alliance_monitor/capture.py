@@ -11,9 +11,16 @@ import numpy as np
 import cv2
 from PIL import Image
 from typing import Optional, Dict
-import win32gui
-import win32ui
-import win32con
+try:
+    import win32gui
+    import win32ui
+    import win32con
+    HAS_WIN32 = True
+except ImportError:
+    win32gui = None
+    win32ui = None
+    win32con = None
+    HAS_WIN32 = False
 from .monitor_config import MonitorConfig
 
 
@@ -26,8 +33,12 @@ class ScreenCapture:
     
     def find_bluestacks_window(self) -> bool:
         """Find the BlueStacks window by title"""
+        if not HAS_WIN32:
+            print("Win32 libraries not available. Cannot find window by title.")
+            return False
         def enum_windows_callback(hwnd, windows):
             if win32gui.IsWindowVisible(hwnd):
+
                 title = win32gui.GetWindowText(hwnd)
                 if MonitorConfig.WINDOW_TITLE_PATTERN in title:
                     windows.append((hwnd, title))

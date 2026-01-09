@@ -35,4 +35,4 @@ soundfile>=0.12.1
 mss>=9.0.0
 opencv-python>=4.8.0
 pytesseract>=0.3.10
-pywin32>=306
+pywin32>=306; sys_platform == 'win32'
