@@ -831,6 +831,7 @@ async def setup_hook():
         "cogs.auto_translate",  # Auto-translate with DeepL
         "cogs.message_extractor",  # Message extraction for global admins
         "cogs.tictactoe",  # Tic-Tac-Toe game
+        "cogs.alliance_monitor",  # Alliance online status monitoring
     ]
     
     loaded_count = 0
@@ -888,6 +889,7 @@ async def setup_hook():
         
         Runs every 5 minutes to show activity and prevent auto-shutdown.
         """
+
         await asyncio.sleep(60)  # Wait 1 minute before starting
         
         while True:
@@ -1016,6 +1018,7 @@ async def setup_hook():
         
         # Register BirthdayWishView
         from cogs.birthday_system import BirthdayWishView
+        bot.add_view(BirthdayWishView(birthday_user_ids=[]))
         bot.add_view(BirthdayWishView(birthday_user_ids=[]))
         logger.info("✅ Registered BirthdayWishView")
         
@@ -2107,7 +2110,7 @@ async def birthday(interaction: discord.Interaction):
         )
 
         embed = discord.Embed(title="Birthday Manager", description=embed_text, color=0xff69b4)
-        embed.set_image(url="https://cdn.discordapp.com/attachments/1435569370389807144/1435875606632988672/v04HfJr.png?ex=690d8edd&is=690c3d5d&hm=83662954ad3897d2b39763d40c347e27222018839a178420a57eb643ffbc3542")
+        embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1435569370389807144/1435875606632988672/v04HfJr.png?ex=690d8edd&is=690c3d5d&hm=83662954ad3897d2b39763d40c347e27222018839a178420a57eb643ffbc3542")
 
         view = BirthdayView()
         # Send the response (don't pass wait to response.send_message)
@@ -3794,6 +3797,7 @@ class DiceBattleView(discord.ui.View):
             # continue to be routed to this instance even after restarts.
             try:
                 bot.add_view(self, message_id=new_msg.id)
+                logger.debug(f"Registered DiceBattleView for message {getattr(new_msg, 'id', None)}: {addview_err}")
             except Exception as addview_err:
                 logger.debug(f"Failed to register DiceBattleView for message {getattr(new_msg, 'id', None)}: {addview_err}")
         except Exception:
@@ -3991,21 +3995,16 @@ async def register_view(interaction: discord.Interaction, channel: discord.TextC
                             await select_interaction.response.send_message("❌ Message has no embed. Cannot determine alliance_id.", ephemeral=True)
                             return
                         
-                        embed = self.message_obj.embeds[0]
                         alliance_id = 0
-                        
-                        # Try to extract alliance_id from embed title or footer
-                        if embed.title:
+                        # Attempt to extract alliance_id from embed title or description
+                        if self.message_obj.embeds and self.message_obj.embeds[0].title:
                             import re
-                            # Try to find alliance ID in footer first (more reliable)
-                            if embed.footer and embed.footer.text:
-                                match = re.search(r'Alliance (\d+)', embed.footer.text)
-                                if match:
-                                    alliance_id = int(match.group(1))
-                            
-                            # If not found, try to get alliance name from title and look it up
-                            if alliance_id == 0:
-                                match = re.search(r'👥 (.+?) - Member List', embed.title)
+                            match = re.search(r'\[(\d+)\]', self.message_obj.embeds[0].title)
+                            if match:
+                                alliance_id = int(match.group(1))
+                            else:
+                                # Try to find alliance name and look up ID
+                                match = re.search(r'Alliance: (.+)', self.message_obj.embeds[0].title)
                                 if match:
                                     alliance_name = match.group(1).strip()
                                     try:
@@ -4101,7 +4100,6 @@ LEGACY_PACKAGES_TO_REMOVE = [
     "torch",
     "torchvision",
     "torchaudio",
-    "opencv-python",
     "opencv-python-headless",
 ]
 
@@ -4234,16 +4232,18 @@ def setup_dependencies(beta_mode=False):
         print("! Warning: requirements.txt contains obsolete packages from older version")
         removed_obsolete = True
         try:
-            os.remove("requirements.txt")
+            # os.remove("requirements.txt") 
+            print("! Kept requirements.txt despite obsolete packages")
         except Exception:
             pass
 
     if not os.path.exists("requirements.txt"):
         if not removed_obsolete:
             print("! Warning: requirements.txt not found")
-        if not download_requirements_from_release(beta_mode=beta_mode):
-            print("✗ Could not download requirements.txt")
-            return False
+        # Note: requirements.txt should be present in the repository
+        # If missing, restore from backup or repository
+        print("✗ requirements.txt missing - please restore from repository")
+        return False
 
     if not check_and_install_requirements():
         print("✗ Failed to install requirements")

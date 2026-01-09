@@ -1,7 +1,8 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+import uuid
 
 from .mongo_client_wrapper import get_mongo_client_sync
 
@@ -1547,3 +1548,124 @@ class AutoRedeemedCodesAdapter:
 
 # Alias for backward compatibility
 PlayerTimezonesAdapter = UserTimezonesAdapter
+
+
+class AutoTranslateAdapter:
+    """Adapter for managing auto-translate configurations in MongoDB"""
+    COLL = 'auto_translate_configs'
+
+    @staticmethod
+    def create_config(guild_id: int, data: Dict[str, Any]) -> Optional[str]:
+        """Create a new auto-translate configuration"""
+        try:
+            db = _get_db()
+            config_id = str(uuid.uuid4())
+            now = datetime.utcnow().isoformat()
+            
+            doc = data.copy()
+            doc['_id'] = config_id
+            doc['config_id'] = config_id
+            doc['guild_id'] = int(guild_id)
+            doc['enabled'] = True
+            doc['created_at'] = now
+            doc['updated_at'] = now
+            
+            db[AutoTranslateAdapter.COLL].insert_one(doc)
+            logger.info(f"Created auto-translate config {config_id} for guild {guild_id}")
+            return config_id
+        except Exception as e:
+            logger.error(f"Failed to create auto-translate config: {e}")
+            return None
+
+    @staticmethod
+    def get_config(config_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific configuration by ID"""
+        try:
+            db = _get_db()
+            doc = db[AutoTranslateAdapter.COLL].find_one({'_id': config_id})
+            if doc:
+                doc['config_id'] = str(doc['_id'])
+            return doc
+        except Exception as e:
+            logger.error(f"Failed to get auto-translate config {config_id}: {e}")
+            return None
+
+    @staticmethod
+    def get_guild_configs(guild_id: int) -> List[Dict[str, Any]]:
+        """Get all configurations for a guild"""
+        try:
+            db = _get_db()
+            docs = list(db[AutoTranslateAdapter.COLL].find({'guild_id': int(guild_id)}))
+            for doc in docs:
+                doc['config_id'] = str(doc['_id'])
+            return docs
+        except Exception as e:
+            logger.error(f"Failed to get auto-translate configs for guild {guild_id}: {e}")
+            return []
+
+    @staticmethod
+    def get_configs_for_channel(channel_id: int) -> List[Dict[str, Any]]:
+        """Get all enabled configurations where channel_id is the source"""
+        try:
+            db = _get_db()
+            # Find configs where source_channel_id matches and enabled is True
+            docs = list(db[AutoTranslateAdapter.COLL].find({
+                'source_channel_id': int(channel_id),
+                'enabled': True
+            }))
+            for doc in docs:
+                doc['config_id'] = str(doc['_id'])
+            return docs
+        except Exception as e:
+            logger.error(f"Failed to get auto-translate configs for channel {channel_id}: {e}")
+            return []
+
+    @staticmethod
+    def update_config(config_id: str, data: Dict[str, Any]) -> bool:
+        """Update a configuration"""
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            
+            update_data = data.copy()
+            update_data['updated_at'] = now
+            # Remove immutable fields if present
+            update_data.pop('config_id', None)
+            update_data.pop('guild_id', None)
+            update_data.pop('_id', None)
+            update_data.pop('created_at', None)
+            
+            result = db[AutoTranslateAdapter.COLL].update_one(
+                {'_id': config_id},
+                {'$set': update_data}
+            )
+            return result.modified_count > 0 or result.matched_count > 0
+        except Exception as e:
+            logger.error(f"Failed to update auto-translate config {config_id}: {e}")
+            return False
+
+    @staticmethod
+    def delete_config(config_id: str) -> bool:
+        """Delete a configuration"""
+        try:
+            db = _get_db()
+            result = db[AutoTranslateAdapter.COLL].delete_one({'_id': config_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Failed to delete auto-translate config {config_id}: {e}")
+            return False
+
+    @staticmethod
+    def toggle_config(config_id: str, enabled: bool) -> bool:
+        """Enable or disable a configuration"""
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            result = db[AutoTranslateAdapter.COLL].update_one(
+                {'_id': config_id},
+                {'$set': {'enabled': enabled, 'updated_at': now}}
+            )
+            return result.modified_count > 0 or result.matched_count > 0
+        except Exception as e:
+            logger.error(f"Failed to toggle auto-translate config {config_id}: {e}")
+            return False

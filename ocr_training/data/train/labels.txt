@@ -1,0 +1,27 @@
+train_0000.png	Khir
+train_0000_aug0.png	Khir
+train_0000_aug1.png	Khir
+train_0001.png	Lord eru
+train_0001_aug0.png	Lord eru
+train_0001_aug1.png	Lord eru
+train_0002.png	AURA
+train_0002_aug0.png	AURA
+train_0002_aug1.png	AURA
+train_0003.png	saleh
+train_0003_aug0.png	saleh
+train_0003_aug1.png	saleh
+train_0004.png	AURA
+train_0004_aug0.png	AURA
+train_0004_aug1.png	AURA
+train_0005.png	Moncho
+train_0005_aug0.png	Moncho
+train_0005_aug1.png	Moncho
+train_0006.png	your CHOAS
+train_0006_aug0.png	your CHOAS
+train_0006_aug1.png	your CHOAS
+train_0007.png	Ace 99
+train_0007_aug0.png	Ace 99
+train_0007_aug1.png	Ace 99
+train_0008.png	n
+train_0008_aug0.png	n
+train_0008_aug1.png	n

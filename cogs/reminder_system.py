@@ -989,15 +989,33 @@ class ReminderSystem(commands.Cog):
             # Get all due reminders
             due_reminders = self.storage.get_due_reminders()
             
-            # ALWAYS filter out reminders that were due before bot startup
-            # This prevents sending missed reminders when the bot restarts
-            original_count = len(due_reminders)
-            due_reminders = [r for r in due_reminders if r['reminder_time'] >= self.startup_time]
-            filtered_count = original_count - len(due_reminders)
-            if filtered_count > 0:
-                logger.info(f"🚫 Skipped {filtered_count} reminder(s) that were due before bot startup")
+            # Split reminders into those to send and those to skip (silently process)
+            to_send = []
+            to_skip = []
             
-            for reminder in due_reminders:
+            for r in due_reminders:
+                if r['reminder_time'] >= self.startup_time:
+                    to_send.append(r)
+                else:
+                    to_skip.append(r)
+            
+            # 1. Silently process missed reminders to avoid stalling recurring ones
+            if to_skip:
+                logger.info(f"🚫 Silently processing {len(to_skip)} missed reminder(s) from before startup")
+                for reminder in to_skip:
+                    try:
+                        # Mark as sent so it doesn't show up in due_reminders again
+                        self.storage.mark_reminder_sent(reminder['id'])
+                        
+                        # If it's recurring, reschedule it so it moves to a future slot
+                        if reminder.get('is_recurring', 0):
+                            await self._reschedule_recurring_reminder(reminder)
+                            logger.info(f"🔁 Rescheduled missed recurring reminder {reminder['id']}")
+                    except Exception as e:
+                        logger.error(f"Error processing missed reminder {reminder.get('id')}: {e}")
+
+            # 2. Process current reminders normally
+            for reminder in to_send:
                 try:
                     # Get channel
                     try:
@@ -1115,15 +1133,27 @@ class ReminderSystem(commands.Cog):
             interval = reminder.get('recurrence_interval', 1)
             
             # Calculate next occurrence based on recurrence type
-            if recurrence_type == 'daily':
-                next_time = current_time + timedelta(days=interval)
-            elif recurrence_type == 'days':
-                next_time = current_time + timedelta(days=interval)
-            elif recurrence_type == 'weekly':
-                next_time = current_time + timedelta(days=7)
-            else:
-                # Default to daily if type is unknown
-                next_time = current_time + timedelta(days=1)
+            # We use a loop to ensure 'next_time' is actually in the future.
+            # This handles cases where the bot was offline for multiple intervals.
+            now = get_accurate_utc_time()
+            next_time = current_time
+            
+            # Break safety after 1000 iterations
+            limit = 0
+            while next_time <= now and limit < 1000:
+                limit += 1
+                if recurrence_type == 'daily':
+                    next_time = next_time + timedelta(days=interval)
+                elif recurrence_type == 'days':
+                    next_time = next_time + timedelta(days=interval)
+                elif recurrence_type == 'weekly':
+                    next_time = next_time + timedelta(days=7)
+                else:
+                    # Default to daily if type is unknown
+                    next_time = next_time + timedelta(days=1)
+            
+            if limit >= 1000:
+                logger.warning(f"Rescheduling limit reached for reminder {reminder.get('id')}. Stuck at {next_time}")
             # Update the reminder time in storage. If storage provides update_reminder_time use it.
             try:
                 if hasattr(self.storage, 'update_reminder_time'):
