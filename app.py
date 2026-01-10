@@ -803,7 +803,6 @@ async def setup_hook():
         "cogs.alliance_member_operations",
         "cogs.changes",
         "cogs.web_search",
-        "cogs.wel",
         "cogs.welcome_channel",
         "cogs.control",
         "cogs.gift_operations",
@@ -826,8 +825,8 @@ async def setup_hook():
         "cogs.events",
         "cogs.server_age",
         "cogs.personalise_chat",
-        # "cogs.music",  # Music bot functionality - DISABLED until Lavalink is configured
-        # "cogs.voice_conversation",  # Voice chat with AI - DISABLED (requires music cog)
+        "cogs.music",  # Music bot functionality
+        "cogs.voice_conversation",  # Voice chat with AI
         "cogs.auto_translate",  # Auto-translate with DeepL
         "cogs.message_extractor",  # Message extraction for global admins
         "cogs.tictactoe",  # Tic-Tac-Toe game

@@ -18,7 +18,7 @@ try:
     from db.mongo_adapters import *  # type: ignore
     # Re-exported names will come from the real module
     __all__ = [
-        'mongo_enabled', 'UserTimezonesAdapter', 'BirthdaysAdapter', 'BirthdayChannelAdapter', 'UserProfilesAdapter', 'GiftcodeStateAdapter', 'GiftCodesAdapter', 'AllianceMembersAdapter', 'AutoRedeemSettingsAdapter', 'AutoRedeemChannelsAdapter'
+        'mongo_enabled', 'UserTimezonesAdapter', 'BirthdaysAdapter', 'BirthdayChannelAdapter', 'UserProfilesAdapter', 'GiftcodeStateAdapter', 'GiftCodesAdapter', 'AllianceMembersAdapter', 'AutoRedeemSettingsAdapter', 'AutoRedeemChannelsAdapter', 'WelcomeChannelAdapter'
     ]
 except Exception as e:
     logging.getLogger(__name__).warning('db.mongo_adapters import failed: %s; using local fallback shim', e)
@@ -123,8 +123,25 @@ except Exception as e:
         def set_channel(guild_id: int, channel_id: int, added_by: int):
             return False
 
+    class WelcomeChannelAdapter(_FallbackAdapter):
+        @staticmethod
+        def get(guild_id: int) -> Optional[Dict[str, Any]]:
+            return None
+        
+        @staticmethod
+        def set(guild_id: int, channel_id: int, enabled: bool = True) -> bool:
+            return False
+        
+        @staticmethod
+        def set_bg_image(guild_id: int, bg_image_url: str) -> bool:
+            return False
+        
+        @staticmethod
+        def delete(guild_id: int) -> bool:
+            return False
+
     __all__ = [
-        'mongo_enabled', 'UserTimezonesAdapter', 'BirthdaysAdapter', 'BirthdayChannelAdapter', 'UserProfilesAdapter', 'GiftcodeStateAdapter', 'GiftCodesAdapter', 'AllianceMembersAdapter', 'AutoRedeemSettingsAdapter', 'AutoRedeemChannelsAdapter'
+        'mongo_enabled', 'UserTimezonesAdapter', 'BirthdaysAdapter', 'BirthdayChannelAdapter', 'UserProfilesAdapter', 'GiftcodeStateAdapter', 'GiftCodesAdapter', 'AllianceMembersAdapter', 'AutoRedeemSettingsAdapter', 'AutoRedeemChannelsAdapter', 'WelcomeChannelAdapter'
     ]
 
 

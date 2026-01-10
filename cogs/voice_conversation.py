@@ -125,6 +125,12 @@ class VoiceConversation(commands.Cog):
                 )
                 self.active_sessions[interaction.guild.id] = session
                 
+                # Set voice channel status
+                try:
+                    await voice_channel.edit(status="🤖 AI voice assistant: Molly")
+                except Exception as e:
+                    print(f"⚠️ Could not set voice channel status: {e}")
+                
                 # Welcome message
                 embed = discord.Embed(
                     title="🎙️ Voice Chat Active!",
@@ -370,6 +376,13 @@ class VoiceConversation(commands.Cog):
         try:
             if guild_id in self.active_sessions:
                 session = self.active_sessions[guild_id]
+                
+                # Clear voice channel status
+                if session.voice_client and session.voice_client.channel:
+                    try:
+                        await session.voice_client.channel.edit(status=None)
+                    except Exception as e:
+                        print(f"⚠️ Could not clear voice channel status: {e}")
                 
                 if session.voice_client and session.voice_client.is_connected():
                     await session.voice_client.disconnect(force=True)
