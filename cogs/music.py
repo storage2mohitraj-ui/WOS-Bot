@@ -3154,6 +3154,11 @@ class Music(commands.Cog):
         
         player: CustomPlayer = interaction.guild.voice_client
         
+        # Check if the voice_client is actually a CustomPlayer (not a regular VoiceClient from voice chat)
+        if player and not isinstance(player, CustomPlayer):
+            # Regular VoiceClient exists (probably from voice chat), treat as no player
+            player = None
+        
         # Create player if not exists (for viewing playlists even when not in voice)
         if not player:
             # Check if user is in voice channel
