@@ -504,6 +504,104 @@ class AutoRedeemSettingsAdapter:
             return []
 
 
+class AutoRedeemMembersAdapter:
+    """Adapter for managing auto-redeem members in MongoDB"""
+    COLL = 'auto_redeem_members'
+
+    @staticmethod
+    def get_members(guild_id: int) -> List[Dict[str, Any]]:
+        """Get all auto-redeem members for a guild"""
+        try:
+            db = _get_db()
+            docs = db[AutoRedeemMembersAdapter.COLL].find({'guild_id': int(guild_id)})
+            return [
+                {
+                    'fid': d.get('fid'),
+                    'nickname': d.get('nickname'),
+                    'furnace_lv': int(d.get('furnace_lv', 0)),
+                    'avatar_image': d.get('avatar_image', ''),
+                    'added_by': int(d.get('added_by', 0)),
+                    'added_at': d.get('added_at')
+                }
+                for d in docs
+            ]
+        except Exception as e:
+            logger.error(f'Failed to get auto-redeem members for guild {guild_id}: {e}')
+            return []
+
+    @staticmethod
+    def add_member(guild_id: int, fid: str, member_data: Dict[str, Any]) -> bool:
+        """Add a member to auto-redeem list"""
+        try:
+            db = _get_db()
+            now = datetime.utcnow().isoformat()
+            db[AutoRedeemMembersAdapter.COLL].update_one(
+                {'guild_id': int(guild_id), 'fid': str(fid)},
+                {
+                    '$set': {
+                        'guild_id': int(guild_id),
+                        'fid': str(fid),
+                        'nickname': member_data.get('nickname', ''),
+                        'furnace_lv': int(member_data.get('furnace_lv', 0)),
+                        'avatar_image': member_data.get('avatar_image', ''),
+                        'added_by': int(member_data.get('added_by', 0)),
+                        'added_at': member_data.get('added_at', now),
+                        'updated_at': now
+                    },
+                    '$setOnInsert': {'created_at': now}
+                },
+                upsert=True
+            )
+            logger.info(f'Added auto-redeem member {fid} for guild {guild_id}')
+            return True
+        except Exception as e:
+            logger.error(f'Failed to add auto-redeem member {fid} for guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def remove_member(guild_id: int, fid: str) -> bool:
+        """Remove a member from auto-redeem list"""
+        try:
+            db = _get_db()
+            result = db[AutoRedeemMembersAdapter.COLL].delete_one({
+                'guild_id': int(guild_id),
+                'fid': str(fid)
+            })
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f'Failed to remove auto-redeem member {fid} for guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def member_exists(guild_id: int, fid: str) -> bool:
+        """Check if member exists in auto-redeem list"""
+        try:
+            db = _get_db()
+            doc = db[AutoRedeemMembersAdapter.COLL].find_one({
+                'guild_id': int(guild_id),
+                'fid': str(fid)
+            })
+            return doc is not None
+        except Exception as e:
+            logger.error(f'Failed to check if member {fid} exists for guild {guild_id}: {e}')
+            return False
+
+    @staticmethod
+    def batch_member_exists(guild_id: int, fids: List[str]) -> Dict[str, bool]:
+        """Batch check if multiple members exist in auto-redeem list"""
+        try:
+            db = _get_db()
+            docs = db[AutoRedeemMembersAdapter.COLL].find({
+                'guild_id': int(guild_id),
+                'fid': {'$in': [str(fid) for fid in fids]}
+            })
+            existing_fids = {str(d.get('fid')) for d in docs}
+            return {str(fid): str(fid) in existing_fids for fid in fids}
+        except Exception as e:
+            logger.error(f'Failed to batch check members for guild {guild_id}: {e}')
+            return {str(fid): False for fid in fids}
+
+
 class AutoRedeemChannelsAdapter:
     """Adapter for managing auto redeem channel configuration in MongoDB"""
     COLL = 'auto_redeem_channels'
@@ -1538,60 +1636,6 @@ class PersistentViewsAdapter:
             return False
 
 
-class AutoRedeemMembersAdapter:
-    COLL = 'auto_redeem_members'
-
-    @staticmethod
-    def get_members(guild_id: int) -> list:
-        try:
-            db = _get_db()
-            docs = list(db[AutoRedeemMembersAdapter.COLL].find({'guild_id': int(guild_id)}))
-            for d in docs:
-                d.pop('_id', None)
-            return docs
-        except Exception as e:
-            logger.error(f'Failed to get auto redeem members for guild {guild_id}: {e}')
-            return []
-
-    @staticmethod
-    def add_member(guild_id: int, fid: str, member_data: Dict[str, Any]) -> bool:
-        try:
-            db = _get_db()
-            now = datetime.utcnow().isoformat()
-            data = member_data.copy()
-            data['guild_id'] = int(guild_id)
-            data['fid'] = str(fid)
-            data['updated_at'] = now
-            
-            db[AutoRedeemMembersAdapter.COLL].update_one(
-                {'guild_id': int(guild_id), 'fid': str(fid)},
-                {'$set': data, '$setOnInsert': {'created_at': now}},
-                upsert=True
-            )
-            return True
-        except Exception as e:
-            logger.error(f'Failed to add auto redeem member {fid}: {e}')
-            return False
-
-    @staticmethod
-    def remove_member(guild_id: int, fid: str) -> bool:
-        try:
-            db = _get_db()
-            result = db[AutoRedeemMembersAdapter.COLL].delete_one({'guild_id': int(guild_id), 'fid': str(fid)})
-            return result.deleted_count > 0
-        except Exception as e:
-            logger.error(f'Failed to remove auto redeem member {fid}: {e}')
-            return False
-
-    @staticmethod
-    def member_exists(guild_id: int, fid: str) -> bool:
-        try:
-            db = _get_db()
-            return db[AutoRedeemMembersAdapter.COLL].count_documents({'guild_id': int(guild_id), 'fid': str(fid)}) > 0
-        except Exception as e:
-            logger.error(f'Failed to check existence of auto redeem member {fid}: {e}')
-            return False
-
 
 class AutoRedeemedCodesAdapter:
     COLL = 'auto_redeemed_codes'
@@ -1624,6 +1668,24 @@ class AutoRedeemedCodesAdapter:
             return db[AutoRedeemedCodesAdapter.COLL].count_documents({'guild_id': int(guild_id), 'code': code, 'fid': str(fid)}) > 0
        except Exception:
            return False
+
+    @staticmethod
+    def batch_check_members(guild_id: int, giftcode: str, fids: List[str]) -> Dict[str, bool]:
+        """Batch check if multiple members have redeemed a code"""
+        try:
+            db = _get_db()
+            # Find all redemptions for this code and these FIDs
+            docs = db[AutoRedeemedCodesAdapter.COLL].find({
+                'guild_id': int(guild_id),
+                'code': giftcode,
+                'fid': {'$in': [str(fid) for fid in fids]}
+            })
+            
+            redeemed_fids = {d.get('fid') for d in docs}
+            return {str(fid): str(fid) in redeemed_fids for fid in fids}
+        except Exception as e:
+            logger.error(f'Failed to batch check redemptions for {giftcode}: {e}')
+            return {str(fid): False for fid in fids}
 
 
 # Alias for backward compatibility
