@@ -968,6 +968,41 @@ class ManageGiftCode(commands.Cog):
                 if redemption_key in self._active_redemptions:
                     self._active_redemptions.discard(redemption_key)
                     self.logger.info(f"🔓 Unlocked auto-redeem for guild {guild_id} with code {giftcode}")
+            
+            # Mark code as processed after redemption completes
+            # This ensures the code is only marked processed after actual redemption finishes
+            try:
+                self.logger.info(f"🏁 Marking code {giftcode} as processed after redemption completion...")
+                
+                # Mark in MongoDB if available
+                mongo_marked = False
+                if mongo_enabled() and GiftCodesAdapter:
+                    try:
+                        GiftCodesAdapter.mark_code_processed(giftcode)
+                        mongo_marked = True
+                        self.logger.info(f"✅ Marked {giftcode} as processed in MongoDB")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to mark code in MongoDB: {e}")
+                
+                # Also mark in SQLite for consistency
+                sqlite_marked = False
+                try:
+                    self.cursor.execute(
+                        "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
+                        (giftcode,)
+                    )
+                    self.giftcode_db.commit()
+                    sqlite_marked = True
+                    self.logger.info(f"✅ Marked {giftcode} as processed in SQLite")
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to mark code in SQLite: {e}")
+                
+                if not mongo_marked and not sqlite_marked:
+                    self.logger.error(f"❌ CRITICAL: Failed to mark {giftcode} as processed in ANY database!")
+                else:
+                    self.logger.info(f"🎉 Successfully marked {giftcode} as processed (MongoDB: {mongo_marked}, SQLite: {sqlite_marked})")
+            except Exception as e:
+                self.logger.error(f"❌ Error marking code {giftcode} as processed: {e}")
     
     def encode_data(self, data_dict):
         """Encode data for WOS API requests"""
@@ -1722,35 +1757,8 @@ class ManageGiftCode(commands.Cog):
                 
                 self.logger.info(f"📊 Triggered auto-redeem for code {code} across {len(enabled_guilds)} guilds")
                 
-                # Mark code as processed after triggering auto-redeem for all guilds
-                try:
-                    # Mark in MongoDB if available
-                    mongo_marked = False
-                    if mongo_enabled() and GiftCodesAdapter:
-                        try:
-                            GiftCodesAdapter.mark_code_processed(code)
-                            mongo_marked = True
-                            self.logger.info(f"✅ Marked {code} as processed in MongoDB")
-                        except Exception as e:
-                            self.logger.error(f"❌ Failed to mark code in MongoDB: {e}")
-                    
-                    # Also mark in SQLite for consistency
-                    sqlite_marked = False
-                    try:
-                        self.cursor.execute(
-                            "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
-                            (code,)
-                        )
-                        self.giftcode_db.commit()
-                        sqlite_marked = True
-                        self.logger.info(f"✅ Marked {code} as processed in SQLite")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to mark code in SQLite: {e}")
-                    
-                    if not mongo_marked and not sqlite_marked:
-                        self.logger.error(f"❌ CRITICAL: Failed to mark {code} as processed in ANY database!")
-                except Exception as e:
-                    self.logger.error(f"❌ Error marking code {code} as processed: {e}")
+                # NOTE: Code will be marked as processed by process_auto_redeem() after completion
+                # This prevents race condition where code is marked processed before redemption finishes
             
             self.logger.info(f"✅ Processed {len(new_codes)} codes for auto-redeem")
             self.logger.info("🏁 === TRIGGER AUTO-REDEEM COMPLETE ===")

@@ -376,6 +376,66 @@ class GiftCodesAdapter:
             logger.error(f'Failed to clear all gift codes: {e}')
             return False
 
+    @staticmethod
+    def get_code(code: str) -> Optional[Dict[str, Any]]:
+        """Get a single gift code with all its fields"""
+        try:
+            db = _get_db()
+            doc = db[GiftCodesAdapter.COLL].find_one({'_id': code})
+            if doc:
+                return {
+                    'giftcode': doc.get('_id'),
+                    'date': doc.get('date'),
+                    'validation_status': doc.get('validation_status'),
+                    'auto_redeem_processed': doc.get('auto_redeem_processed', False),
+                    'created_at': doc.get('created_at'),
+                    'updated_at': doc.get('updated_at')
+                }
+            return None
+        except Exception as e:
+            logger.error(f'Failed to get gift code {code}: {e}')
+            return None
+
+    @staticmethod
+    def get_all_with_status() -> List[Dict[str, Any]]:
+        """Get all gift codes with their auto_redeem_processed status"""
+        try:
+            db = _get_db()
+            docs = db[GiftCodesAdapter.COLL].find({})
+            return [
+                {
+                    'giftcode': d.get('_id'),
+                    'date': d.get('date'),
+                    'validation_status': d.get('validation_status'),
+                    'auto_redeem_processed': d.get('auto_redeem_processed', False),
+                    'created_at': d.get('created_at'),
+                    'updated_at': d.get('updated_at')
+                }
+                for d in docs
+            ]
+        except Exception as e:
+            logger.error(f'Failed to get all gift codes with status: {e}')
+            return []
+
+    @staticmethod
+    def mark_code_processed(code: str) -> bool:
+        """Mark a gift code as processed for auto-redeem"""
+        try:
+            db = _get_db()
+            result = db[GiftCodesAdapter.COLL].update_one(
+                {'_id': code},
+                {
+                    '$set': {
+                        'auto_redeem_processed': True,
+                        'updated_at': datetime.utcnow().isoformat()
+                    }
+                }
+            )
+            return result.modified_count > 0 or result.matched_count > 0
+        except Exception as e:
+            logger.error(f'Failed to mark code {code} as processed: {e}')
+            return False
+
 
 class AutoRedeemSettingsAdapter:
     """Adapter for managing auto redeem settings in MongoDB"""
