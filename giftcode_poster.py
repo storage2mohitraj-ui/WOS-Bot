@@ -427,10 +427,25 @@ class GiftCodeView(discord.ui.View):
         """Open a modal to redeem the latest code manually."""
         # Determine the latest code
         if not self.codes:
-                # Try to fetch if empty (though usually passed in)
+            # Try to fetch if empty (though usually passed in)
+            # Use wait_for to ensure we don't block the interaction for too long
             try:
-                self.codes = await get_active_gift_codes()
-            except:
+                # We give it 2.5 seconds max (Discord interaction token lasts 3s if not deferred, 
+                # but we prefer to fail fast and defer if needed, though here we want to show modal immediately if possible)
+                # Actually, modals cannot be sent after defer(). So we MUST NOT defer if we want to send a modal.
+                # But we also cannot take > 3 seconds.
+                
+                self.codes = await asyncio.wait_for(get_active_gift_codes(), timeout=2.0)
+            except asyncio.TimeoutError:
+                # If fetching takes too long, we can't show the modal safely without risking "Unknown interaction"
+                # So we inform the user and trigger a background fetch to populate cache for next time.
+                asyncio.create_task(get_active_gift_codes())
+                await interaction_button.response.send_message(
+                    "🎁 Codes are being refreshed... Please click **Redeem** again in a few seconds!", 
+                    ephemeral=True
+                )
+                return
+            except Exception:
                 pass
         
         if not self.codes:

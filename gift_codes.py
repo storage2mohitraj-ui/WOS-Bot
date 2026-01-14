@@ -44,18 +44,27 @@ class GiftCodeScraper:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+        self.cache_data = None
+        self.last_fetched = None
+        self.cache_duration = timedelta(minutes=10)
     
     async def fetch_gift_codes(self):
         """
         Fetch and parse gift codes from wosgiftcodes.com
         Returns a dict with active and expired codes
         """
+        # Return cached result if valid
+        if self.cache_data and self.last_fetched:
+            if datetime.now() - self.last_fetched < self.cache_duration:
+                logger.debug("Returning cached gift codes")
+                return self.cache_data
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(self.url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
                     if response.status != 200:
                         logger.error(f"Failed to fetch gift codes. Status: {response.status}")
-                        # Return fallback codes if fetch fails
+                        # Return fallback codes if fetch fails (dont cache failure unless we want to retry soon)
                         return {
                             'active_codes': self.get_fallback_codes(),
                             'expired_codes': [],
@@ -71,6 +80,10 @@ class GiftCodeScraper:
                             'expired_codes': [],
                             'last_updated': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }
+                    
+                    # Update cache
+                    self.cache_data = result
+                    self.last_fetched = datetime.now()
                     return result
 
         except aiohttp.ClientTimeout:
