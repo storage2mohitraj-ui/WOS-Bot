@@ -510,10 +510,14 @@ class AutoRedeemMembersAdapter:
 
     @staticmethod
     def get_members(guild_id: int) -> List[Dict[str, Any]]:
-        """Get all auto-redeem members for a guild"""
+        """Get all auto-redeem members for a guild (filters out invalid FIDs)"""
         try:
             db = _get_db()
-            docs = db[AutoRedeemMembersAdapter.COLL].find({'guild_id': int(guild_id)})
+            # Query with filter to exclude null/empty FIDs at database level
+            docs = db[AutoRedeemMembersAdapter.COLL].find({
+                'guild_id': int(guild_id),
+                'fid': {'$nin': [None, '', 'None']}
+            })
             return [
                 {
                     'fid': d.get('fid'),
@@ -524,6 +528,8 @@ class AutoRedeemMembersAdapter:
                     'added_at': d.get('added_at')
                 }
                 for d in docs
+                # Additional Python-level filter as safety
+                if d.get('fid') and str(d.get('fid', '')).strip() and str(d.get('fid', '')).lower() != 'none'
             ]
         except Exception as e:
             logger.error(f'Failed to get auto-redeem members for guild {guild_id}: {e}')
@@ -533,6 +539,14 @@ class AutoRedeemMembersAdapter:
     def add_member(guild_id: int, fid: str, member_data: Dict[str, Any]) -> bool:
         """Add a member to auto-redeem list"""
         try:
+            # Validate FID - reject null, empty, or 'None' values
+            if not fid or not str(fid).strip() or str(fid).strip().lower() == 'none':
+                logger.warning(f'Rejected adding member with invalid FID: {fid}')
+                return False
+            
+            # Ensure fid is a clean string
+            fid = str(fid).strip()
+            
             db = _get_db()
             now = datetime.utcnow().isoformat()
             db[AutoRedeemMembersAdapter.COLL].update_one(
@@ -662,8 +676,11 @@ class WelcomeChannelAdapter:
             doc = db[WelcomeChannelAdapter.COLL].find_one({'_id': str(guild_id)})
             if not doc:
                 return None
+            # Handle channel_id being None (e.g., when only bg_image_url was set)
+            channel_id_raw = doc.get('channel_id')
+            channel_id = int(channel_id_raw) if channel_id_raw is not None else None
             return {
-                'channel_id': int(doc.get('channel_id')),
+                'channel_id': channel_id,
                 'enabled': bool(doc.get('enabled', True)),
                 'bg_image_url': doc.get('bg_image_url')
             }

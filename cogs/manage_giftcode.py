@@ -298,44 +298,122 @@ class ManageGiftCode(commands.Cog):
         
         @staticmethod
         def get_members(cog_instance, guild_id):
-            """Get all auto-redeem members for a guild"""
+            """Get all auto-redeem members for a guild (filters out invalid FIDs)"""
             try:
+                members = []
+                
                 # Try MongoDB first
                 if mongo_enabled() and AutoRedeemMembersAdapter:
                     try:
                         members = AutoRedeemMembersAdapter.get_members(guild_id)
-                        if members:
-                            return members
                     except Exception as e:
                         cog_instance.logger.warning(f"MongoDB get_members failed, using SQLite: {e}")
+                        members = []
                 
-                # Fallback to SQLite
-                cog_instance.cursor.execute("""
-                    SELECT fid, nickname, furnace_lv, avatar_image, added_by, added_at
-                    FROM auto_redeem_members
-                    WHERE guild_id = ?
-                    ORDER BY furnace_lv DESC
-                """, (guild_id,))
-                rows = cog_instance.cursor.fetchall()
-                return [
-                    {
-                        'fid': row[0],
-                        'nickname': row[1],
-                        'furnace_lv': row[2] or 0,
-                        'avatar_image': row[3] or '',
-                        'added_by': row[4],
-                        'added_at': row[5]
-                    }
-                    for row in rows
+                # Fallback to SQLite if no members from MongoDB
+                if not members:
+                    cog_instance.cursor.execute("""
+                        SELECT fid, nickname, furnace_lv, avatar_image, added_by, added_at
+                        FROM auto_redeem_members
+                        WHERE guild_id = ?
+                        ORDER BY furnace_lv DESC
+                    """, (guild_id,))
+                    rows = cog_instance.cursor.fetchall()
+                    members = [
+                        {
+                            'fid': row[0],
+                            'nickname': row[1],
+                            'furnace_lv': row[2] or 0,
+                            'avatar_image': row[3] or '',
+                            'added_by': row[4],
+                            'added_at': row[5]
+                        }
+                        for row in rows
+                    ]
+                
+                # Filter out members with null/empty/None FIDs
+                valid_members = [
+                    member for member in members
+                    if member.get('fid') and str(member.get('fid', '')).strip() and str(member.get('fid', '')).lower() != 'none'
                 ]
+                
+                # Log if we filtered any invalid members
+                filtered_count = len(members) - len(valid_members)
+                if filtered_count > 0:
+                    cog_instance.logger.warning(f"Filtered out {filtered_count} members with invalid FIDs for guild {guild_id}")
+                
+                return valid_members
             except Exception as e:
                 cog_instance.logger.error(f"Error getting auto-redeem members: {e}")
                 return []
         
         @staticmethod
+        def cleanup_null_members(cog_instance, guild_id=None):
+            """Remove all members with null/empty FIDs from database"""
+            try:
+                removed_count = 0
+                
+                # Remove from SQLite
+                if guild_id:
+                    cog_instance.cursor.execute("""
+                        DELETE FROM auto_redeem_members 
+                        WHERE guild_id = ? AND (fid IS NULL OR fid = '' OR fid = 'None')
+                    """, (guild_id,))
+                else:
+                    cog_instance.cursor.execute("""
+                        DELETE FROM auto_redeem_members 
+                        WHERE fid IS NULL OR fid = '' OR fid = 'None'
+                    """)
+                removed_count = cog_instance.cursor.rowcount
+                cog_instance.giftcode_db.commit()
+                
+                # Remove from MongoDB
+                if mongo_enabled() and AutoRedeemMembersAdapter:
+                    try:
+                        from db.mongo_adapters import _get_db
+                        db = _get_db()
+                        if db:
+                            if guild_id:
+                                result = db[AutoRedeemMembersAdapter.COLL].delete_many({
+                                    'guild_id': int(guild_id),
+                                    '$or': [
+                                        {'fid': None},
+                                        {'fid': ''},
+                                        {'fid': 'None'}
+                                    ]
+                                })
+                            else:
+                                result = db[AutoRedeemMembersAdapter.COLL].delete_many({
+                                    '$or': [
+                                        {'fid': None},
+                                        {'fid': ''},
+                                        {'fid': 'None'}
+                                    ]
+                                })
+                            removed_count += result.deleted_count
+                    except Exception as e:
+                        cog_instance.logger.error(f"Error cleaning up null members from MongoDB: {e}")
+                
+                if removed_count > 0:
+                    cog_instance.logger.info(f"🧹 Cleaned up {removed_count} members with null/empty FIDs")
+                
+                return removed_count
+            except Exception as e:
+                cog_instance.logger.error(f"Error cleaning up null members: {e}")
+                return 0
+        
+        @staticmethod
         def add_member(cog_instance, guild_id, fid, member_data):
             """Add a member to auto-redeem list"""
             try:
+                # Validate FID - reject null, empty, or 'None' values
+                if not fid or not str(fid).strip() or str(fid).strip().lower() == 'none':
+                    cog_instance.logger.warning(f"Rejected adding member with invalid FID: {fid}")
+                    return False
+                
+                # Ensure fid is a clean string
+                fid = str(fid).strip()
+                
                 member_data['fid'] = fid
                 member_data['added_at'] = datetime.now()
                 
@@ -699,9 +777,16 @@ class ManageGiftCode(commands.Cog):
                     self.logger.error(f"Error tracking redemption: {e}")
             
             # Return results
+            # Treat TIME_ERROR, EXPIRED, and USAGE_LIMIT as "already redeemed" since:
+            # - TIME_ERROR: Code has expired (redemption window passed)
+            # - EXPIRED: Code is no longer valid
+            # - USAGE_LIMIT: Code has been fully used up
+            # These aren't failures - they just mean the code is no longer available
+            expired_statuses = {"TIME_ERROR", "EXPIRED", "USAGE_LIMIT"}
+            
             success = 1 if redemption_successful else 0
-            already_redeemed = 1 if final_status == "ALREADY_RECEIVED" else 0
-            failed = 1 if not redemption_successful and final_status != "ALREADY_RECEIVED" else 0
+            already_redeemed = 1 if final_status == "ALREADY_RECEIVED" or final_status in expired_statuses else 0
+            failed = 1 if not redemption_successful and final_status != "ALREADY_RECEIVED" and final_status not in expired_statuses else 0
             
             return (final_status, success, already_redeemed, failed)
             
@@ -875,7 +960,7 @@ class ManageGiftCode(commands.Cog):
                     f"👥 **Members:** {len(members)}\n"
                     f"⏭️ **Skipped:** {skipped_count} (already redeemed)\n"
                     f"⏳ **Status:** Processing...\n"
-                    f"🚀 **Mode:** Concurrent ({self.concurrent_redemptions} at a time)\n"
+                    f"🏰 **Server:** {channel.guild.name}\n"
                 ),
                 color=0xFEE75C
             )
@@ -910,6 +995,12 @@ class ManageGiftCode(commands.Cog):
                         
                         # Update progress message after each completion
                         try:
+                            # Calculate progress percentage and create visual bar
+                            progress_percent = (completed_count / len(members)) * 100
+                            bar_length = 20
+                            filled_length = int(bar_length * completed_count / len(members))
+                            progress_bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                            
                             progress_embed = discord.Embed(
                                 title="🎁 Auto-Redeem In Progress",
                                 description=(
@@ -918,11 +1009,12 @@ class ManageGiftCode(commands.Cog):
                                     f"\u001b[1;37mGift Code: {giftcode}\u001b[0m\n"
                                     f"\u001b[2;36m━━━━━━━━━━━━━━━━━━━━━━\u001b[0m\n"
                                     f"```\n"
+                                    f"**Progress:** `{progress_bar}` **{progress_percent:.1f}%**\n"
+                                    f"📊 **Processed:** {completed_count}/{len(members)}\n\n"
                                     f"✅ **Success:** {success_count}\n"
                                     f"ℹ️ **Already Redeemed:** {already_redeemed_count}\n"
                                     f"❌ **Failed:** {failed_count}\n"
-                                    f"⏳ **Remaining:** {len(members) - completed_count}\n"
-                                    f"🚀 **Mode:** Concurrent ({self.concurrent_redemptions} at a time)\n"
+                                    f"🏰 **Server:** {channel.guild.name}\n"
                                 ),
                                 color=0x5865F2
                             )
@@ -1426,10 +1518,16 @@ class ManageGiftCode(commands.Cog):
         await self.bot.wait_until_ready()
         self.logger.info("Gift code API check task started")
         
+        # Cleanup members with null/empty FIDs from all guilds
+        self.logger.info("🧹 Cleaning up members with null/empty FIDs...")
+        cleanup_count = self.AutoRedeemDB.cleanup_null_members(self)
+        if cleanup_count > 0:
+            self.logger.info(f"✅ Removed {cleanup_count} invalid members from auto-redeem lists")
+        
         # Sync auto-redeem settings from SQLite to MongoDB (for migration on first startup)
         await self.sync_auto_redeem_settings_to_mongo()
         
-        # Process any existing unprocessed codes on startup
+        # Process any existing unprocessed codes on startup (mark as processed, don't redeem)
         await self.process_existing_codes_on_startup()
     
     async def sync_auto_redeem_settings_to_mongo(self):
@@ -1504,13 +1602,17 @@ class ManageGiftCode(commands.Cog):
             self.logger.exception(f"❌ Error syncing auto-redeem settings: {e}")
     
     async def process_existing_codes_on_startup(self):
-        """Check for existing codes that haven't been auto-redeemed and trigger auto-redeem for them"""
+        """
+        Check for existing codes that haven't been marked as processed and mark them.
+        NOTE: We intentionally do NOT trigger auto-redeem on startup.
+        Auto-redeem should only trigger for truly NEW codes from the API, not on bot restart.
+        """
         try:
             # Add a small delay to ensure bot is fully ready
             await asyncio.sleep(5)
             
-            self.logger.info("🚀 === STARTUP AUTO-REDEEM CHECK ===")
-            self.logger.info("Checking for existing unprocessed gift codes on startup...")
+            self.logger.info("🚀 === STARTUP CODE PROCESSING ===")
+            self.logger.info("Marking existing unprocessed gift codes as processed (no auto-redeem on startup)...")
             
             unprocessed_codes = []
             
@@ -1560,16 +1662,38 @@ class ManageGiftCode(commands.Cog):
             
             if not unprocessed_codes:
                 self.logger.info("✅ No unprocessed codes found (all codes processed or DB empty)")
-                self.logger.info("🏁 === STARTUP AUTO-REDEEM CHECK COMPLETE ===")
+                self.logger.info("🏁 === STARTUP CODE PROCESSING COMPLETE ===")
                 return
             
-            self.logger.info(f"🎯 FOUND {len(unprocessed_codes)} UNPROCESSED CODES - TRIGGERING AUTO-REDEEM!")
+            self.logger.info(f"📋 FOUND {len(unprocessed_codes)} UNPROCESSED CODES - MARKING AS PROCESSED (no auto-redeem on startup)")
             
-            # Trigger auto-redeem for all unprocessed codes
-            await self.trigger_auto_redeem_for_new_codes(unprocessed_codes)
+            # Mark all unprocessed codes as processed WITHOUT triggering auto-redeem
+            # This prevents startup redemption while allowing new codes from API to trigger auto-redeem
+            for code, date in unprocessed_codes:
+                try:
+                    # Mark in MongoDB if available
+                    if mongo_enabled() and GiftCodesAdapter:
+                        try:
+                            GiftCodesAdapter.mark_code_processed(code)
+                            self.logger.info(f"✅ Marked {code} as processed in MongoDB")
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to mark code in MongoDB: {e}")
+                    
+                    # Also mark in SQLite for consistency
+                    try:
+                        self.cursor.execute(
+                            "UPDATE gift_codes SET auto_redeem_processed = 1 WHERE giftcode = ?",
+                            (code,)
+                        )
+                        self.giftcode_db.commit()
+                        self.logger.info(f"✅ Marked {code} as processed in SQLite")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to mark code in SQLite: {e}")
+                except Exception as e:
+                    self.logger.error(f"❌ Error marking code {code} as processed: {e}")
             
-            self.logger.info(f"✅ Startup auto-redeem triggered for {len(unprocessed_codes)} codes")
-            self.logger.info("🏁 === STARTUP AUTO-REDEEM CHECK COMPLETE ===")
+            self.logger.info(f"✅ Marked {len(unprocessed_codes)} existing codes as processed (auto-redeem skipped on startup)")
+            self.logger.info("🏁 === STARTUP CODE PROCESSING COMPLETE ===")
             
         except Exception as e:
             self.logger.exception(f"❌ CRITICAL ERROR in startup auto-redeem check: {e}")
